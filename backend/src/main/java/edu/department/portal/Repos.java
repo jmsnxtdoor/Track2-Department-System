@@ -1,4 +1,5 @@
 package edu.department.portal;
+import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.data.jpa.repository.JpaRepository;
 import java.util.*;
 interface StudentRepo extends JpaRepository<Student,Long>{
@@ -32,8 +33,11 @@ interface AttendanceRepo extends JpaRepository<Attendance,Long>{
 }
 interface UserRepo extends JpaRepository<UserAccount,Long>{
  Optional<UserAccount> findByUsername(String username);
+ @EntityGraph(attributePaths = "student")
+ Optional<UserAccount> findWithStudentByUsername(String username);
  boolean existsByUsername(String username);
  boolean existsByStudent_IdAndIdNot(Long studentId,Long userId);
+ @EntityGraph(attributePaths = "student")
  List<UserAccount> findAllByOrderByUsernameAsc();
  long countByRoleAndEnabledTrue(UserAccount.UserRole role);
 }

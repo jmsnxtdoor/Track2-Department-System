@@ -2,9 +2,11 @@ package edu.department.portal;
 
 import edu.department.portal.UserAccount.UserRole;
 import org.junit.jupiter.api.Test;
+import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.lang.reflect.Method;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -17,6 +19,32 @@ class UserManagementServiceTest {
     private final AuditService audit = mock(AuditService.class);
     private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
     private final UserManagementService service = new UserManagementService(users, students, encoder, audit);
+
+    @Test
+    void userListFetchesAndReturnsLinkedStudentDetails() throws NoSuchMethodException {
+        EntityGraph fetchGraph = UserRepo.class
+                .getMethod("findAllByOrderByUsernameAsc")
+                .getAnnotation(EntityGraph.class);
+        assertNotNull(fetchGraph);
+        assertArrayEquals(new String[] {"student"}, fetchGraph.attributePaths());
+
+        UserAccount user = new UserAccount();
+        user.id = 4L;
+        user.username = "student";
+        user.role = UserRole.STUDENT;
+        Student student = new Student();
+        student.id = 1L;
+        student.studentNumber = "DEMO";
+        student.fullName = "DEMO-TRACK2-20261030-PHASE9";
+        user.student = student;
+        when(users.findAllByOrderByUsernameAsc()).thenReturn(java.util.List.of(user));
+
+        UserManagementService.UserView result = service.list().getFirst();
+
+        assertEquals(1L, result.studentId());
+        assertEquals("DEMO", result.studentNumber());
+        assertEquals("DEMO-TRACK2-20261030-PHASE9", result.studentName());
+    }
 
     @Test
     void createHashesPasswordAndReturnsOnlyPublicFields() {

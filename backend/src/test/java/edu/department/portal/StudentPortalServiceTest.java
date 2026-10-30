@@ -4,8 +4,10 @@ import edu.department.portal.Attendance.Status;
 import edu.department.portal.LedgerEntry.Kind;
 import edu.department.portal.UserAccount.UserRole;
 import org.junit.jupiter.api.Test;
+import org.springframework.data.jpa.repository.EntityGraph;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.lang.reflect.Method;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -22,9 +24,14 @@ class StudentPortalServiceTest {
     private final StudentPortalService service = new StudentPortalService(users, ledger, attendance);
 
     @Test
-    void summaryAndPersonalRecordsUseOnlyTheAuthenticatedAccountLink() {
+    void summaryAndPersonalRecordsUseOnlyTheAuthenticatedAccountLink() throws NoSuchMethodException {
+        Method linkedStudentQuery = UserRepo.class.getMethod("findWithStudentByUsername", String.class);
+        EntityGraph fetchGraph = linkedStudentQuery.getAnnotation(EntityGraph.class);
+        assertNotNull(fetchGraph);
+        assertArrayEquals(new String[] {"student"}, fetchGraph.attributePaths());
+
         UserAccount account = linkedAccount("student-one", 21L, "S-021", "Student One");
-        when(users.findByUsername("student-one")).thenReturn(Optional.of(account));
+        when(users.findWithStudentByUsername("student-one")).thenReturn(Optional.of(account));
         LedgerEntry fine = entry(1L, Kind.FINE, "50.00", "Library fine", "F-1");
         LedgerEntry payment = entry(2L, Kind.PAYMENT, "20.00", "Cash payment", "P-1");
         when(ledger.findByStudentIdOrderByCreatedAtDesc(21L)).thenReturn(List.of(payment, fine));
@@ -57,7 +64,7 @@ class StudentPortalServiceTest {
         UserAccount account = new UserAccount();
         account.username = "student-one";
         account.role = UserRole.STUDENT;
-        when(users.findByUsername("student-one")).thenReturn(Optional.of(account));
+        when(users.findWithStudentByUsername("student-one")).thenReturn(Optional.of(account));
 
         ResponseStatusException failure = assertThrows(ResponseStatusException.class,
                 () -> service.summary("student-one"));
@@ -70,7 +77,7 @@ class StudentPortalServiceTest {
     void studentRoleIsRequiredEvenIfAccountHasStudentLink() {
         UserAccount account = linkedAccount("staff", 21L, "S-021", "Student One");
         account.role = UserRole.OFFICER;
-        when(users.findByUsername("staff")).thenReturn(Optional.of(account));
+        when(users.findWithStudentByUsername("staff")).thenReturn(Optional.of(account));
 
         ResponseStatusException failure = assertThrows(ResponseStatusException.class,
                 () -> service.summary("staff"));

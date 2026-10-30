@@ -80,7 +80,7 @@ public class StudentPortalService {
     }
 
     private Student linkedStudent(String username) {
-        UserAccount account = users.findByUsername(username)
+        UserAccount account = users.findWithStudentByUsername(username)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Student account not found."));
         if (account.role != UserRole.STUDENT) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "This account is not a student account.");
