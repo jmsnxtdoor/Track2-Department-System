@@ -2,6 +2,7 @@ package edu.department.portal;
 
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.*;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.Authentication;
 import org.springframework.transaction.annotation.Transactional;
@@ -126,7 +127,7 @@ public class Api {
     @ResponseStatus(HttpStatus.CREATED)
     @Transactional
     public LedgerEntry addLedger(@Valid @RequestBody LedgerInput input, Authentication auth) {
-        Student student = students.findById(input.studentId())
+        Student student = students.findByIdForUpdate(input.studentId())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Student not found."));
         if (input.kind() == LedgerEntry.Kind.PAYMENT && balance(student.id).compareTo(input.amount()) < 0) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Payment exceeds unpaid balance.");
@@ -157,6 +158,8 @@ public class Api {
                                      Authentication auth) {
         LedgerEntry original = ledger.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Transaction not found."));
+        students.findByIdForUpdate(original.student.id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Student not found."));
         if (original.description.startsWith(REVERSAL_PREFIX)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "A reversal cannot itself be reversed.");
         }
@@ -193,7 +196,10 @@ public class Api {
     public FundEntry addFund(@Valid @RequestBody FundEntry input, Authentication auth) {
         input.id = null;
         validateFund(input.type, input.amount, input.description);
-        if (input.type == FundEntry.Type.DISBURSEMENT && fundBalance().compareTo(input.amount) < 0) {
+        funds.acquireFundLedgerLock();
+        funds.findAllForUpdate();
+        if (input.type == FundEntry.Type.DISBURSEMENT
+                && fundBalance().compareTo(input.amount) < 0) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Insufficient fund balance.");
         }
         input.description = input.description.trim();
@@ -209,6 +215,8 @@ public class Api {
     @Transactional
     public FundEntry reverseFund(@PathVariable Long id, @Valid @RequestBody ReasonInput input,
                                  Authentication auth) {
+        funds.acquireFundLedgerLock();
+        funds.findAllForUpdate();
         FundEntry original = funds.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Fund entry not found."));
         if (original.description.startsWith(REVERSAL_PREFIX)) {
@@ -218,7 +226,8 @@ public class Api {
         if (funds.existsByDescriptionStartingWith(marker)) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "This fund entry has already been reversed.");
         }
-        if (original.type != FundEntry.Type.DISBURSEMENT && fundBalance().compareTo(original.amount) < 0) {
+        if (original.type != FundEntry.Type.DISBURSEMENT
+                && fundBalance().compareTo(original.amount) < 0) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "The fund entry cannot be reversed because those funds have already been spent.");
         }
@@ -243,7 +252,11 @@ public class Api {
     }
 
     private BigDecimal fundBalance() {
-        return funds.findAll().stream()
+        return fundBalance(funds.findAll());
+    }
+
+    private BigDecimal fundBalance(List<FundEntry> entries) {
+        return entries.stream()
                 .map(entry -> entry.type == FundEntry.Type.DISBURSEMENT
                         ? entry.amount.negate() : entry.amount)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
@@ -364,7 +377,12 @@ public class Api {
         record.event = event;
         record.student = student;
         record.status = input.status() == null ? Attendance.Status.PRESENT : input.status();
-        Attendance saved = attendance.save(record);
+        Attendance saved;
+        try {
+            saved = attendance.saveAndFlush(record);
+        } catch (DataIntegrityViolationException failure) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Already checked in.", failure);
+        }
         audit.record(auth.getName(), "ATTENDANCE_RECORDED", "Attendance", saved.id.toString(),
                 "eventId=" + event.id + ";studentId=" + student.id + ";status=" + saved.status);
         return saved;

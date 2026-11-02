@@ -51,7 +51,7 @@ public class UserManagementService {
 
     @Transactional
     public UserView update(long id, UpdateUser request, String actor) {
-        UserAccount user = users.findById(id)
+        UserAccount user = users.findWithStudentById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found."));
         String nextUsername = request.username().trim();
         if (!user.username.equals(nextUsername) && users.existsByUsername(nextUsername)) {
@@ -93,12 +93,12 @@ public class UserManagementService {
 
     @Transactional
     public UserView linkStudent(long id, Long studentId, String actor) {
-        UserAccount user = users.findById(id)
+        UserAccount user = users.findWithStudentById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found."));
         if (user.role != UserRole.STUDENT) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Only student accounts can be linked to student records.");
         }
-        Student student = studentId == null ? null : students.findById(studentId)
+        Student student = studentId == null ? null : students.findByIdForUpdate(studentId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Student record not found."));
         if (student != null && users.existsByStudent_IdAndIdNot(student.id, user.id)) {
             throw new ResponseStatusException(HttpStatus.CONFLICT, "This student record is linked to another account.");

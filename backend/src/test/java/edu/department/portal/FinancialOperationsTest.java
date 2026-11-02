@@ -38,10 +38,11 @@ class FinancialOperationsTest {
         student.id = 10L;
         student.studentNumber = "S-10";
         when(students.findById(10L)).thenReturn(Optional.of(student));
+        when(students.findByIdForUpdate(10L)).thenReturn(Optional.of(student));
     }
 
     @Test
-    void acceptsPartialPaymentAndRejectsPaymentAboveRemainingBalance() {
+    void acceptsPartialPaymentAndRejectsPaymentAboveRemainingBalanceUnderStudentLock() {
         LedgerEntry fine = new LedgerEntry();
         fine.kind = LedgerEntry.Kind.FINE;
         fine.amount = new BigDecimal("100.00");
@@ -65,6 +66,7 @@ class FinancialOperationsTest {
                 new Api.LedgerInput(10L, LedgerEntry.Kind.PAYMENT,
                         new BigDecimal("70.00"), "Overpayment", "PAY-2"), auth));
         verify(ledger, times(1)).save(any(LedgerEntry.class));
+        verify(students, times(2)).findByIdForUpdate(10L);
     }
 
     @Test
@@ -76,6 +78,7 @@ class FinancialOperationsTest {
         original.amount = new BigDecimal("75.00");
         original.description = "Original fine";
         when(ledger.findById(25L)).thenReturn(Optional.of(original));
+        when(students.findByIdForUpdate(10L)).thenReturn(Optional.of(student));
         when(ledger.findByStudentIdOrderByCreatedAtDesc(10L)).thenReturn(List.of(original));
         when(ledger.existsByDescriptionStartingWith("REVERSAL:FINE:25:")).thenReturn(false, true);
         when(ledger.save(any(LedgerEntry.class))).thenAnswer(invocation -> {
@@ -93,6 +96,7 @@ class FinancialOperationsTest {
         assertEquals("Original fine", original.description);
         assertThrows(ResponseStatusException.class,
                 () -> api.reverseLedger(25L, new Api.ReasonInput("Duplicate"), auth));
+        verify(students, times(2)).findByIdForUpdate(10L);
     }
 
     @Test

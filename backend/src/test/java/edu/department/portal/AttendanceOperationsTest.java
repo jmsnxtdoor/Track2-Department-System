@@ -40,7 +40,7 @@ class AttendanceOperationsTest {
         when(events.findById(2L)).thenReturn(Optional.of(event));
         when(students.findByStudentNumber("S-1")).thenReturn(Optional.of(student));
         when(attendance.existsByStudentIdAndEventId(1L, 2L)).thenReturn(false, true);
-        when(attendance.save(any(Attendance.class))).thenAnswer(invocation -> {
+        when(attendance.saveAndFlush(any(Attendance.class))).thenAnswer(invocation -> {
             Attendance record = invocation.getArgument(0);
             record.id = 3L;
             return record;
@@ -59,7 +59,7 @@ class AttendanceOperationsTest {
         assertSame(student, saved.student);
         assertThrows(ResponseStatusException.class, () -> api.manualAttendance(
                 new Api.ScanInput(2L, "S-1", Attendance.Status.PRESENT), auth));
-        verify(attendance, times(1)).save(any(Attendance.class));
+        verify(attendance, times(1)).saveAndFlush(any(Attendance.class));
         verify(audit).record("officer", "ATTENDANCE_RECORDED", "Attendance", "3",
                 "eventId=2;studentId=1;status=LATE");
     }

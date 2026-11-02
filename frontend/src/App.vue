@@ -2,6 +2,8 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import axios from 'axios';
 import { useDisplay } from 'vuetify';
+import { setRequestFailure } from './requestState.js';
+import { saveUserAccount } from './userAccounts.js';
 
 const api = axios.create({ baseURL: import.meta.env.VITE_API_URL || '/api' });
 const { mdAndUp } = useDisplay();
@@ -12,6 +14,8 @@ const role = ref('');
 const page = ref('Dashboard');
 const drawerOpen = ref(false);
 const loading = ref(false);
+const ledgerSubmitting = ref(false);
+const fundSubmitting = ref(false);
 const error = ref('');
 const notice = ref('');
 const students = ref([]);
@@ -245,7 +249,7 @@ async function request(method, url, data) {
     const response = await api({ method, url, data, ...credentials() });
     return response.data;
   } catch (failure) {
-    error.value = friendlyError(failure);
+    setRequestFailure(error, notice, failure, friendlyError);
     throw failure;
   }
 }
@@ -270,6 +274,7 @@ async function unlinkStudentRecord() {
 async function login() {
   loading.value = true;
   error.value = '';
+  notice.value = '';
   try {
     auth.value = btoa(`${username.value}:${password.value}`);
     const current = await request('get', '/me');
@@ -291,6 +296,8 @@ async function logout() {
   await stopQrScanner();
   auth.value = '';
   role.value = '';
+  error.value = '';
+  notice.value = '';
   page.value = 'Dashboard';
   students.value = [];
   ledger.value = [];
@@ -361,6 +368,8 @@ async function saveStudent() {
 }
 
 async function submitLedger() {
+  if (ledgerSubmitting.value) return;
+  ledgerSubmitting.value = true;
   const kind = page.value === 'Fines' ? 'FINE' : 'PAYMENT';
   try {
     await request('post', '/finance/ledger', { ...entry.value, kind });
@@ -369,10 +378,14 @@ async function submitLedger() {
     await refresh();
   } catch {
     // Keep entered values after a rejected transaction.
+  } finally {
+    ledgerSubmitting.value = false;
   }
 }
 
 async function submitFund() {
+  if (fundSubmitting.value) return;
+  fundSubmitting.value = true;
   const type = page.value === 'Disbursements' ? 'DISBURSEMENT' : fund.value.type;
   try {
     await request('post', '/finance/funds', { ...fund.value, type });
@@ -381,6 +394,8 @@ async function submitFund() {
     await refresh();
   } catch {
     // Keep entered values after a rejected transaction.
+  } finally {
+    fundSubmitting.value = false;
   }
 }
 
@@ -470,23 +485,10 @@ async function loadAdminPage(value) {
 }
 
 async function saveUser() {
-  const body = editingUser.value
-    ? {
-      username: userForm.value.username,
-      role: userForm.value.role,
-      enabled: userForm.value.enabled,
-      ...(userForm.value.newPassword ? { newPassword: userForm.value.newPassword } : {}),
-    }
-    : { username: userForm.value.username, role: userForm.value.role, password: userForm.value.password };
   try {
-    const savedUser = await request(editingUser.value ? 'put' : 'post',
-      editingUser.value ? `/admin/users/${editingUser.value.id}` : '/admin/users', body);
-    if (userForm.value.role === 'STUDENT'
-      && userForm.value.studentId !== (editingUser.value?.studentId ?? null)) {
-      await request('put', `/admin/users/${savedUser.id}/student-link`, { studentId: userForm.value.studentId });
-    }
+    const wasEditing = await saveUserAccount({ editingUser, userForm, request });
     userDialog.value = false;
-    notice.value = editingUser.value ? 'User account updated.' : 'User account created.';
+    notice.value = wasEditing ? 'User account updated.' : 'User account created.';
     await loadAdminPage('Users & Roles');
   } catch {
     // Keep the dialog open so validation errors can be corrected.
@@ -789,7 +791,7 @@ onBeforeUnmount(() => {
                   <v-col cols="12" md="2"><v-text-field v-model.number="entry.amount" type="number" min="0.01" step="0.01" label="Amount (₱)" variant="outlined" density="compact" required /></v-col>
                   <v-col cols="12" md="3"><v-text-field v-model="entry.description" :label="page === 'Fines' ? 'Reason for fine' : 'Payment description'" maxlength="255" variant="outlined" density="compact" required /></v-col>
                   <v-col cols="12" md="2"><v-text-field v-model="entry.referenceNumber" label="Reference number (optional)" maxlength="255" variant="outlined" density="compact" /></v-col>
-                  <v-col cols="12" md="2"><v-btn type="submit" color="primary">{{ page === 'Fines' ? 'Record fine' : 'Record payment' }}</v-btn></v-col>
+                  <v-col cols="12" md="2"><v-btn type="submit" color="primary" :loading="ledgerSubmitting" :disabled="ledgerSubmitting">{{ page === 'Fines' ? 'Record fine' : 'Record payment' }}</v-btn></v-col>
                 </v-row>
                 <div v-if="page === 'Collections'" class="muted text-caption">You can record a partial payment, but it cannot be more than the student's unpaid balance.</div>
               </v-form>
@@ -830,7 +832,7 @@ onBeforeUnmount(() => {
                   <v-col cols="12" md="3"><v-select v-if="page === 'Funds'" v-model="fund.type" label="Entry type" :items="fundTypeOptions" variant="outlined" density="compact" /></v-col>
                   <v-col cols="12" md="2"><v-text-field v-model.number="fund.amount" :label="page === 'Funds' ? 'Amount (₱)' : 'Expense amount (₱)'" type="number" min="0.01" step="0.01" variant="outlined" density="compact" required /></v-col>
                   <v-col cols="12" md="5"><v-text-field v-model="fund.description" :label="page === 'Funds' ? 'Description or payee' : 'Payee or reason'" maxlength="255" variant="outlined" density="compact" required /></v-col>
-                  <v-col cols="12" md="2"><v-btn type="submit" color="primary">{{ page === 'Funds' ? 'Record fund entry' : 'Record expense' }}</v-btn></v-col>
+                  <v-col cols="12" md="2"><v-btn type="submit" color="primary" :loading="fundSubmitting" :disabled="fundSubmitting">{{ page === 'Funds' ? 'Record fund entry' : 'Record expense' }}</v-btn></v-col>
                 </v-row>
               </v-form>
             </v-card>

@@ -75,7 +75,7 @@ class UserManagementServiceTest {
         admin.username = "admin";
         admin.role = UserRole.ADMIN;
         admin.enabled = true;
-        when(users.findById(1L)).thenReturn(Optional.of(admin));
+        when(users.findWithStudentById(1L)).thenReturn(Optional.of(admin));
 
         assertThrows(ResponseStatusException.class, () -> service.update(1L,
                 new UserManagementService.UpdateUser("admin", UserRole.ADMIN, false, null), "admin"));
@@ -93,8 +93,8 @@ class UserManagementServiceTest {
         student.id = 12L;
         student.studentNumber = "S-001";
         student.fullName = "Student One";
-        when(users.findById(7L)).thenReturn(Optional.of(user));
-        when(students.findById(12L)).thenReturn(Optional.of(student));
+        when(users.findWithStudentById(7L)).thenReturn(Optional.of(user));
+        when(students.findByIdForUpdate(12L)).thenReturn(Optional.of(student));
         when(users.existsByStudent_IdAndIdNot(12L, 7L)).thenReturn(false);
         when(users.save(user)).thenReturn(user);
 
@@ -103,6 +103,7 @@ class UserManagementServiceTest {
         assertEquals(12L, result.studentId());
         assertEquals("S-001", result.studentNumber());
         assertEquals("Student One", result.studentName());
+        verify(students).findByIdForUpdate(12L);
         verify(audit).record("admin", "STUDENT_ACCOUNT_LINKED", "UserAccount", "7", "studentNumber=S-001");
     }
 
@@ -113,14 +114,15 @@ class UserManagementServiceTest {
         user.role = UserRole.STUDENT;
         Student student = new Student();
         student.id = 12L;
-        when(users.findById(7L)).thenReturn(Optional.of(user));
-        when(students.findById(12L)).thenReturn(Optional.of(student));
+        when(users.findWithStudentById(7L)).thenReturn(Optional.of(user));
+        when(students.findByIdForUpdate(12L)).thenReturn(Optional.of(student));
         when(users.existsByStudent_IdAndIdNot(12L, 7L)).thenReturn(true);
 
         ResponseStatusException failure = assertThrows(ResponseStatusException.class,
                 () -> service.linkStudent(7L, 12L, "admin"));
 
         assertEquals(409, failure.getStatusCode().value());
+        verify(students).findByIdForUpdate(12L);
         verify(users, never()).save(any(UserAccount.class));
     }
 
@@ -129,7 +131,7 @@ class UserManagementServiceTest {
         UserAccount user = new UserAccount();
         user.id = 7L;
         user.role = UserRole.ADMIN;
-        when(users.findById(7L)).thenReturn(Optional.of(user));
+        when(users.findWithStudentById(7L)).thenReturn(Optional.of(user));
 
         ResponseStatusException failure = assertThrows(ResponseStatusException.class,
                 () -> service.linkStudent(7L, 12L, "admin"));
@@ -145,7 +147,7 @@ class UserManagementServiceTest {
         user.username = "student-one";
         user.role = UserRole.STUDENT;
         user.student = new Student();
-        when(users.findById(7L)).thenReturn(Optional.of(user));
+        when(users.findWithStudentById(7L)).thenReturn(Optional.of(user));
 
         ResponseStatusException failure = assertThrows(ResponseStatusException.class, () -> service.update(
                 7L,
@@ -154,6 +156,34 @@ class UserManagementServiceTest {
 
         assertEquals(400, failure.getStatusCode().value());
         verify(users, never()).save(any(UserAccount.class));
+    }
+
+    @Test
+    void updatingStudentAccountReturnsItsExistingStudentLink() throws NoSuchMethodException {
+        var fetchGraph = UserRepo.class.getMethod("findWithStudentById", Long.class)
+                .getAnnotation(EntityGraph.class);
+        assertNotNull(fetchGraph);
+        assertArrayEquals(new String[] {"student"}, fetchGraph.attributePaths());
+
+        UserAccount user = new UserAccount();
+        user.id = 7L;
+        user.username = "student-one";
+        user.role = UserRole.STUDENT;
+        Student student = new Student();
+        student.id = 12L;
+        student.studentNumber = "S-001";
+        student.fullName = "Student One";
+        user.student = student;
+        when(users.findWithStudentById(7L)).thenReturn(Optional.of(user));
+        when(users.save(user)).thenReturn(user);
+
+        UserManagementService.UserView result = service.update(7L,
+                new UserManagementService.UpdateUser("student-one-renamed", UserRole.STUDENT, true, null),
+                "admin");
+
+        assertEquals(12L, result.studentId());
+        assertEquals("S-001", result.studentNumber());
+        assertEquals("Student One", result.studentName());
     }
 
     private String getSavedUserHash() {
