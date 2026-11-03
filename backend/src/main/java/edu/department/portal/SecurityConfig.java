@@ -21,7 +21,9 @@ import java.util.*;
    .orElseThrow(() -> new UsernameNotFoundException("User not found."));
  }
  @Bean SecurityFilterChain filter(HttpSecurity http,@Value("${app.cors.origin}") String origin)throws Exception{
-  http.csrf(c->c.disable()).cors(c->c.configurationSource(request->{CorsConfiguration x=new CorsConfiguration();x.setAllowedOrigins(List.of(origin));x.setAllowedMethods(List.of("GET","POST","PUT","DELETE","OPTIONS"));x.setAllowedHeaders(List.of("Authorization","Content-Type"));return x;}))
+  List<String> allowedOrigins=Arrays.stream(origin.split(",")).map(String::trim).filter(value->!value.isEmpty()).toList();
+  if(allowedOrigins.isEmpty())throw new IllegalArgumentException("At least one CORS origin must be configured.");
+  http.csrf(c->c.disable()).cors(c->c.configurationSource(request->{CorsConfiguration x=new CorsConfiguration();x.setAllowedOrigins(allowedOrigins);x.setAllowedMethods(List.of("GET","POST","PUT","DELETE","OPTIONS"));x.setAllowedHeaders(List.of("Authorization","Content-Type"));return x;}))
   .authorizeHttpRequests(a->a.dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
   .requestMatchers("/api/health","/swagger-ui/**","/swagger-ui.html","/v3/api-docs/**").permitAll()
   .requestMatchers(HttpMethod.GET,"/api/me").authenticated()

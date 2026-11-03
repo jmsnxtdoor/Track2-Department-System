@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpHeaders;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.annotation.Import;
@@ -16,11 +17,14 @@ import java.util.List;
 import static org.mockito.Mockito.when;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@WebMvcTest(controllers = {Api.class, UserAdminController.class, AuditAdminController.class})
+@WebMvcTest(controllers = {Api.class, UserAdminController.class, AuditAdminController.class}, properties = {
+        "app.cors.origin=http://localhost:5173,http://127.0.0.1:8083"
+})
 @Import(SecurityConfig.class)
 class AdminAuthorizationTest {
     @Autowired
@@ -109,6 +113,21 @@ class AdminAuthorizationTest {
         mvc.perform(get("/api/attendance/events")).andExpect(status().isOk());
         mvc.perform(get("/api/finance/ledger")).andExpect(status().isForbidden());
         mvc.perform(get("/api/admin/audit-logs")).andExpect(status().isForbidden());
+    }
+
+    @Test
+    void allowsConfiguredMultipleCorsOriginsAndRejectsUnlistedOrigins() throws Exception {
+        mvc.perform(options("/api/attendance/events")
+                        .header(HttpHeaders.ORIGIN, "http://127.0.0.1:8083")
+                        .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                        .header(HttpHeaders.ACCESS_CONTROL_REQUEST_HEADERS, "authorization,content-type"))
+                .andExpect(status().isOk())
+                .andExpect(header().string(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN, "http://127.0.0.1:8083"));
+
+        mvc.perform(options("/api/attendance/events")
+                        .header(HttpHeaders.ORIGIN, "http://unauthorized.example")
+                        .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "POST"))
+                .andExpect(status().isForbidden());
     }
 
     @Test

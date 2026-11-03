@@ -71,6 +71,10 @@ class StudentApiClient {
       throw const ApiException(
         'The server returned student data in an unexpected format.',
       );
+    } on FormatException {
+      throw const ApiException(
+        'The server returned student data in an unexpected format.',
+      );
     }
   }
 
@@ -82,6 +86,10 @@ class StudentApiClient {
       throw const ApiException(
         'The server returned payment data in an unexpected format.',
       );
+    } on FormatException {
+      throw const ApiException(
+        'The server returned payment data in an unexpected format.',
+      );
     }
   }
 
@@ -90,6 +98,10 @@ class StudentApiClient {
       final rows = await _getList('/students/me/attendance');
       return rows.map(StudentAttendanceEntry.fromJson).toList();
     } on TypeError {
+      throw const ApiException(
+        'The server returned attendance data in an unexpected format.',
+      );
+    } on FormatException {
       throw const ApiException(
         'The server returned attendance data in an unexpected format.',
       );
@@ -121,7 +133,12 @@ class StudentApiClient {
     if (decoded is! List<dynamic>) {
       throw const ApiException('The server returned an unexpected response.');
     }
-    return decoded.whereType<Map<String, dynamic>>().toList();
+    if (decoded.any((row) => row is! Map<String, dynamic>)) {
+      throw const ApiException(
+        'The server returned a list in an unexpected format.',
+      );
+    }
+    return decoded.cast<Map<String, dynamic>>();
   }
 
   Future<http.Response> _send(String path) async {

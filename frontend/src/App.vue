@@ -11,6 +11,7 @@ const username = ref('');
 const password = ref('');
 const auth = ref('');
 const role = ref('');
+let activeRequests = 0;
 const page = ref('Dashboard');
 const drawerOpen = ref(false);
 const loading = ref(false);
@@ -142,6 +143,8 @@ const studentLinkOptions = computed(() => students.value.map(student => ({
   value: student.id,
 })));
 const chartMaximum = computed(() => Math.max(1, ...(stats.value.collectionChart || []).map(item => Number(item.amount))));
+const hasCollectionActivity = computed(() =>
+  (stats.value.collectionChart || []).some(item => Number(item.amount) !== 0));
 const reportOptions = [
   { title: 'Students', value: 'Students' },
   { title: 'Student fines and payments', value: 'Fines & Collections' },
@@ -244,13 +247,16 @@ function auditDetails(item) {
 
 const credentials = () => ({ headers: { Authorization: `Basic ${auth.value}` } });
 async function request(method, url, data) {
+  if (activeRequests === 0) error.value = '';
+  activeRequests += 1;
   try {
-    error.value = '';
     const response = await api({ method, url, data, ...credentials() });
     return response.data;
   } catch (failure) {
     setRequestFailure(error, notice, failure, friendlyError);
     throw failure;
+  } finally {
+    activeRequests -= 1;
   }
 }
 
@@ -374,8 +380,8 @@ async function submitLedger() {
   try {
     await request('post', '/finance/ledger', { ...entry.value, kind });
     entry.value = { studentId: null, amount: null, description: '', referenceNumber: '' };
-    notice.value = kind === 'FINE' ? 'Fine recorded.' : 'Payment recorded.';
     await refresh();
+    notice.value = kind === 'FINE' ? 'Fine recorded.' : 'Payment recorded.';
   } catch {
     // Keep entered values after a rejected transaction.
   } finally {
@@ -390,8 +396,8 @@ async function submitFund() {
   try {
     await request('post', '/finance/funds', { ...fund.value, type });
     fund.value = { type: 'ADDITION', amount: null, description: '' };
-    notice.value = type === 'DISBURSEMENT' ? 'Expense recorded.' : 'Fund entry recorded.';
     await refresh();
+    notice.value = type === 'DISBURSEMENT' ? 'Expense recorded.' : 'Fund entry recorded.';
   } catch {
     // Keep entered values after a rejected transaction.
   } finally {
@@ -565,17 +571,24 @@ function reportRows() {
       date: item.createdAt,
       student: item.student?.studentNumber,
       kind: item.kind,
-      amount: item.amount,
+      amount: Number(item.amount).toFixed(2),
       reference: item.referenceNumber,
       description: item.description,
     }));
   }
-  if (reportKind.value === 'Unpaid Balances') return reportData.value.finance?.balances || [];
+  if (reportKind.value === 'Unpaid Balances') {
+    return (reportData.value.finance?.balances || []).map(({ studentNumber, fullName, unpaidBalance }) =>
+      ({ studentNumber, fullName, unpaidBalance: Number(unpaidBalance).toFixed(2) }));
+  }
   if (reportKind.value === 'Funds & Disbursements') {
     return reportData.value.funds.map(({ createdAt, type, amount, description }) =>
-      ({ createdAt, type, amount, description }));
+      ({ createdAt, type, amount: Number(amount).toFixed(2), description }));
   }
-  return reportData.value.attendance;
+  if (reportKind.value === 'Attendance per Event') {
+    return reportData.value.attendance.map(({ eventDate, title, present, late, absent, excused, total }) =>
+      ({ eventDate, title, present, late, absent, excused, total }));
+  }
+  return [];
 }
 
 function exportExcelCsv() {
@@ -585,7 +598,13 @@ function exportExcelCsv() {
     return;
   }
   const columns = Object.keys(rows[0]);
-  const escapeCsv = value => `"${String(value ?? '').replaceAll('"', '""')}"`;
+  const escapeCsv = value => {
+    const text = String(value ?? '');
+    const safeText = /^[\t\r\n]/.test(text) || /^[\u0000-\u0020]*[=+\-@]/.test(text)
+      ? `'${text}`
+      : text;
+    return `"${safeText.replaceAll('"', '""')}"`;
+  };
   const csv = [columns.map(escapeCsv).join(','), ...rows.map(row => columns.map(key => escapeCsv(row[key])).join(','))]
     .join('\r\n');
   const blob = new Blob(['\uFEFF', csv], { type: 'text/csv;charset=utf-8' });
@@ -724,12 +743,14 @@ onBeforeUnmount(() => {
               <v-col cols="12" md="6">
                 <v-card class="pa-5 h-100">
                   <h3>Payments collected by month</h3>
-                  <div v-for="month in stats.collectionChart || []" :key="month.month" class="chart-row">
-                    <span class="chart-label">{{ month.month }}</span>
-                    <div class="chart-track"><div class="chart-bar" :style="{ width: `${Math.max(0, Number(month.amount) / chartMaximum * 100)}%` }" /></div>
-                    <span class="chart-value">{{ money(month.amount) }}</span>
-                  </div>
-                  <p v-if="!stats.collectionChart?.length" class="muted mt-4">No payment activity for this period.</p>
+                  <template v-if="hasCollectionActivity">
+                    <div v-for="month in stats.collectionChart || []" :key="month.month" class="chart-row">
+                      <span class="chart-label">{{ month.month }}</span>
+                      <div class="chart-track"><div class="chart-bar" :style="{ width: `${Math.max(0, Number(month.amount) / chartMaximum * 100)}%` }" /></div>
+                      <span class="chart-value">{{ money(month.amount) }}</span>
+                    </div>
+                  </template>
+                  <p v-else class="muted mt-4">No payment activity for this period.</p>
                 </v-card>
               </v-col>
               <v-col cols="12" md="6">

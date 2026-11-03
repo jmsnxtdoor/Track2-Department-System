@@ -244,9 +244,7 @@ class _StudentHomeState extends State<StudentHome> {
   }
 
   Widget _fines(StudentSummary summary) {
-    final fines = _ledger
-        .where((entry) => entry.kind == 'FINE' && !entry.correction)
-        .toList();
+    final fines = _ledger.where((entry) => entry.kind == 'FINE').toList();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -269,10 +267,14 @@ class _StudentHomeState extends State<StudentHome> {
           ...fines.map(
             (fine) => _recordCard(
               icon: Icons.receipt_long_outlined,
-              title: fine.description,
+              title: _entryTitle(fine),
               subtitle: _date(fine.createdAt),
               amount: _money(fine.amount),
-              status: fine.corrected ? 'Corrected' : 'Recorded',
+              status: fine.correction
+                  ? 'Correction'
+                  : fine.corrected
+                      ? 'Corrected'
+                      : 'Recorded',
             ),
           ),
       ],
@@ -280,9 +282,7 @@ class _StudentHomeState extends State<StudentHome> {
   }
 
   Widget _payments() {
-    final payments = _ledger
-        .where((entry) => entry.kind == 'PAYMENT' && !entry.correction)
-        .toList();
+    final payments = _ledger.where((entry) => entry.kind == 'PAYMENT').toList();
     if (payments.isEmpty) {
       return const _EmptyMessage(
           message: 'No payments have been recorded yet.');
@@ -292,14 +292,18 @@ class _StudentHomeState extends State<StudentHome> {
           .map(
             (payment) => _recordCard(
               icon: Icons.payments_outlined,
-              title: payment.description,
+              title: _entryTitle(payment),
               subtitle: [
                 _date(payment.createdAt),
                 if (payment.referenceNumber?.isNotEmpty ?? false)
                   'Reference: ${payment.referenceNumber}',
               ].join('\n'),
               amount: _money(payment.amount),
-              status: payment.corrected ? 'Corrected' : null,
+              status: payment.correction
+                  ? 'Correction'
+                  : payment.corrected
+                      ? 'Corrected'
+                      : null,
             ),
           )
           .toList(),
@@ -317,7 +321,10 @@ class _StudentHomeState extends State<StudentHome> {
             (record) => _recordCard(
               icon: Icons.event_available_outlined,
               title: record.activityName,
-              subtitle: _date(record.activityDate),
+              subtitle: [
+                _date(record.activityDate),
+                'Checked in ${_time(record.scannedAt)}',
+              ].join('\n'),
               amount: '',
               status: _statusLabel(record.status),
             ),
@@ -532,6 +539,9 @@ class _StudentHomeState extends State<StudentHome> {
 
   String _money(double amount) => '₱${amount.toStringAsFixed(2)}';
 
+  String _entryTitle(StudentLedgerEntry entry) =>
+      entry.correction ? 'Balance correction' : entry.description;
+
   String _statusLabel(String status) {
     if (status.isEmpty) return 'Unknown';
     return '${status[0]}${status.substring(1).toLowerCase()}';
@@ -554,6 +564,11 @@ class _StudentHomeState extends State<StudentHome> {
       'Dec',
     ];
     return '${months[date.month - 1]} ${date.day}, ${date.year}';
+  }
+
+  String _time(DateTime? dateTime) {
+    if (dateTime == null) return 'Time unavailable';
+    return TimeOfDay.fromDateTime(dateTime).format(context);
   }
 }
 
@@ -595,6 +610,7 @@ class StudentQrPage extends StatelessWidget {
                       version: QrVersions.auto,
                       size: 240,
                       backgroundColor: Colors.white,
+                      semanticsLabel: 'Student ID QR code for $studentNumber',
                     ),
                     const SizedBox(height: 16),
                     const Text(

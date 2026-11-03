@@ -36,7 +36,7 @@ data/          Local PostgreSQL data files (private, not for submission)
 frontend/      Vue/Vuetify administrative application
 mobile/        Flutter student portal, Android platform, and Flutter tests
 scripts/       Local Track 2 backend startup helper
-tools/         Local JDK, Maven repository, and Android SDK (not for submission)
+tools/         Local JDK and Maven repository; optional Android SDK (not for submission)
 ```
 
 ## Requirements
@@ -49,7 +49,7 @@ For a fresh development setup, install or provide:
 - Flutter 3.47.x and Dart 3.13.x.
 - For Android APK builds: Android SDK Platform 36, Build Tools 36.0.0, NDK 28.2.13676358, and Android command-line tools. Android Studio and an emulator are optional.
 
-The versions above match the current Track 2 workspace. Its copies of the JDK, Android SDK, and Maven dependency cache live under `tools/` and are intentionally excluded from source submissions. A new developer should install the required tools separately.
+The versions above match the current Track 2 workspace. Local copies of the JDK, Android SDK, and Maven dependency cache are excluded from source submissions. This workspace has Android SDK components under `tools/android-sdk`; a new developer should install the required tools separately.
 
 ## PostgreSQL setup
 
@@ -147,17 +147,59 @@ flutter analyze
 flutter test
 ```
 
-The current Android build uses Flutter's configured Android SDK path in the untracked `mobile/android/local.properties`. On the original development machine, the SDK is installed at `tools/android-sdk`; that local SDK directory is not submitted.
+For an Android emulator with the local backend running:
 
-For an Android emulator, the default API base URL is `http://10.0.2.2:8080/api`. To build the debug APK:
+```powershell
+flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8080/api
+```
+
+For Flutter Web on the same computer, set `API_BASE_URL` to the local backend URL and configure `CORS_ORIGIN` to the exact browser origin Flutter Web uses. The backend's default CORS origin is only `http://localhost:5173`, which is the Vue development server.
+
+The Android SDK path is configured in the untracked `mobile/android/local.properties`; it is machine-specific and is not submitted.
+
+The app's default API base URL is `http://10.0.2.2:8080/api`, which works for an Android emulator when the backend is listening on the development computer. To build a debug APK after Android SDK setup:
 
 ```powershell
 flutter build apk --debug
 ```
 
-Expected output: `mobile/build/app/outputs/flutter-apk/app-debug.apk`. The current workspace has a successful debug APK, but it is debug-signed and is not a Play Store/release package.
+Expected output: `mobile/build/app/outputs/flutter-apk/app-debug.apk`. This is a debug-signed package for local testing, not a release or Play Store package. A release build requires an approved signing key and release signing configuration; do not use the debug key for distribution.
 
 Vue and Flutter Web have both been verified against the same local Spring Boot API and PostgreSQL database using the allowed `http://localhost:5173` origin. If you use another browser origin, configure that exact origin; do not use a wildcard.
+
+### Android SDK setup and APK verification
+
+The Android SDK is not included in this repository. This workspace has the required SDK packages under `tools/android-sdk`; a fresh checkout needs Android Studio or the Android command-line tools and the following SDK Manager packages:
+
+- Android SDK Platform 36.
+- Android SDK Build-Tools 36.0.0.
+- Android NDK 28.2.13676358.
+- Android SDK Command-line Tools (latest).
+
+Then configure Flutter to use the installed SDK, accept the Android SDK licenses, and verify `flutter doctor -v` reports the Android toolchain as available:
+
+```powershell
+flutter config --android-sdk "<path-to-Android-SDK>"
+flutter config --jdk-dir "<path-to-JDK-21>"
+flutter doctor --android-licenses
+flutter doctor -v
+```
+
+The SDK and JDK paths are machine-specific. Generate/update the ignored `mobile/android/local.properties` for the local machine; do not commit it. The current workspace's `local.properties` points to `tools/android-sdk`, and Flutter is configured to use that SDK and `tools/jdk-21`. Android Studio itself is optional when the command-line tools and required SDK packages are installed. Installation or download should be approved before proceeding.
+
+After SDK setup, from `mobile/`, build the local debug APK with the intended API endpoint embedded:
+
+```powershell
+flutter build apk --debug --dart-define=API_BASE_URL=https://<approved-api-host>/api
+```
+
+Use the emulator URL `http://10.0.2.2:8080/api` only for local emulator testing. Plain HTTP is not appropriate for sending HTTP Basic credentials over a network.
+
+### Computer and phone connectivity
+
+LAN access is intentionally not enabled by the development configuration. The backend is started on loopback by the workspace helper, PostgreSQL must remain loopback-only, and the development CORS origin is limited to the configured Vue origin. A physical phone or another computer cannot use `127.0.0.1` on the development computer as its API host.
+
+For an approved LAN demonstration or deployment, first provide an HTTPS endpoint (for example, through an approved TLS reverse proxy), then configure the backend to bind only as required, allow only the exact Vue browser origin in `CORS_ORIGIN`, and permit only the required HTTPS/API traffic through the host firewall. Point Flutter at `https://<approved-api-host>/api` with `--dart-define=API_BASE_URL=...`. Android native HTTP requests do not use browser CORS, but still require network routing and valid TLS. Do not expose PostgreSQL port 55432, use wildcard CORS, or send Basic credentials over plain HTTP. This repository does not include TLS certificates, a production reverse proxy, firewall rules, or public deployment configuration.
 
 ## OpenAPI and Swagger
 
@@ -252,18 +294,18 @@ flutter analyze
 flutter test
 ```
 
-The latest recorded checks passed: 30 backend tests, 2 frontend regression tests, 4 Flutter tests, Flutter analysis, and the Vue production build. The backend run included the opt-in PostgreSQL concurrency regression against a disposable test database. An Android debug APK was also built successfully; it is debug-signed, not a release package. Browser smoke testing covered navigation across all 11 web pages and invalid login. Vue, Spring Boot, PostgreSQL, and Flutter Web integration was verified using the linked fictional DEMO student. No financial transactions, fund entries, attendance events, or attendance records were created in the development database during this audit.
+Latest Phase 5 verification: 39 Maven tests passed (including 6 PostgreSQL integration tests against disposable PostgreSQL), 10 Flutter tests passed, Flutter analysis was clean, the Flutter Web build passed, 2 Vue unit tests passed, and all 12 Playwright E2E tests passed. In Phase 6, `flutter doctor -v` verified the Android toolchain and `flutter build apk --debug --no-pub` successfully built a debug APK. These checks used fictional data and a disposable database. No Android emulator or physical Android device was available; the debug APK is not a release package. See `runtime-validation-report.md` for phase-specific evidence and limits.
 
 ## Limitations and remaining integration work
 
 - LAN sharing is paused and not complete. The API currently listens on loopback; no LAN firewall rule or HTTPS endpoint is configured.
-- The current local development database contains one fictional DEMO student linked to the development Student account; a fresh database/source checkout has no demonstration student records. Do not submit the local database or its backups.
-- Financial and fund workflows have automated unit/service coverage, but live transaction creation, balance changes, and correction behavior have not been demonstrated using populated financial records.
-- Attendance recording and report logic have automated tests, but live attendance records and camera-based QR scanning have not been verified end to end with demonstration data.
+- The current local development database may contain the fictional DEMO student; a fresh database/source checkout has no demonstration student records. Do not submit the local database or its backups.
+- Financial, fund, attendance, reporting, and student portal workflows have passed automated disposable-PostgreSQL and browser tests as described in the runtime report. These results do not replace deployment or device certification.
+- Physical Android execution and camera-based QR scanning have not been tested. Automated QR payload/API tests do not certify camera capture.
 - Browser API calls are restricted to the configured CORS origin. The verified development origin is `http://localhost:5173`; another host or port requires a deliberate, exact-origin configuration.
 - The student QR contains a student ID for lookup; it is not an authentication credential or proof of attendance.
 - HTTP Basic is suitable only for controlled local development. Do not use it over plain HTTP on a LAN or the Internet.
-- The project is not production hardened or deployed. It has no production TLS setup, deployment configuration, or complete live integration-test suite.
+- The project is not production hardened or deployed. Android debug APK generation passed, but the Android release build currently uses debug signing; no production TLS setup, reverse proxy, LAN firewall rules, or deployment automation is configured.
 
 ## Submission and secret-handling checklist
 

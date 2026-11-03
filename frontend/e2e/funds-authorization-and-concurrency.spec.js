@@ -21,10 +21,14 @@ test('protects fund mutations and serializes concurrent expenses', async ({ requ
     })).status()).toBe(403);
 
     const baseline = Number((await (await adminApi.get('/api/dashboard')).json()).fundBalance);
-    const openingAmount = 1000 - baseline;
-    expect(openingAmount).toBeGreaterThan(0);
-    const opening = await addFundEntry(adminApi, 'OPENING_BALANCE', openingAmount, 'E2E concurrency opening');
-    expect(opening.status()).toBe(201);
+    const balanceAdjustment = 1000 - baseline;
+    if (balanceAdjustment > 0) {
+      const opening = await addFundEntry(adminApi, 'OPENING_BALANCE', balanceAdjustment, 'E2E concurrency opening');
+      expect(opening.status()).toBe(201);
+    } else if (balanceAdjustment < 0) {
+      const normalization = await addFundEntry(adminApi, 'DISBURSEMENT', -balanceAdjustment, 'E2E concurrency normalization');
+      expect(normalization.status()).toBe(201);
+    }
     const malformed = await treasurerApi.post('/api/finance/funds', {
       data: { type: 'ADDITION', amount: 10 },
     });
@@ -50,12 +54,12 @@ test('protects fund mutations and serializes concurrent expenses', async ({ requ
 
     const entries = await (await treasurerApi.get('/api/finance/funds')).json();
     const scenarioEntries = entries.filter(row =>
-      row.description === 'E2E concurrency opening'
+      row.description.startsWith('E2E concurrency ')
       || row.description.startsWith('E2E concurrent expense '));
-    expect(scenarioEntries).toHaveLength(2);
+    expect(scenarioEntries).toHaveLength(1 + (balanceAdjustment === 0 ? 0 : 1));
     expect(scenarioEntries.reduce((total, row) =>
       total + (row.type === 'DISBURSEMENT' ? -Number(row.amount) : Number(row.amount)), 0))
-      .toBe(openingAmount - 600);
+      .toBe(400 - baseline);
     expect(Number((await (await treasurerApi.get('/api/dashboard')).json()).fundBalance)).toBe(400);
   } finally {
     await adminApi.dispose();

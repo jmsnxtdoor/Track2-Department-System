@@ -97,28 +97,173 @@ void main() {
   });
 
   test('explains unauthorized and unlinked account responses', () async {
-    for (final entry in {
-      401: 'Username or password is incorrect. Try again.',
-      409:
-          'Your student account is not linked to a student record. Contact the department administrator.',
-    }.entries) {
-      final mock = MockClient((_) async => http.Response('', entry.key));
+    final unauthorizedClient = MockClient((_) async => http.Response('', 401));
+    await expectLater(
+      StudentApiClient.signIn(
+        apiBaseUrl: 'http://localhost:8080/api',
+        username: 'student',
+        password: 'password',
+        client: unauthorizedClient,
+      ),
+      throwsA(
+        isA<ApiException>().having(
+          (failure) => failure.message,
+          'message',
+          'Username or password is incorrect. Try again.',
+        ),
+      ),
+    );
 
-      await expectLater(
-        StudentApiClient.signIn(
-          apiBaseUrl: 'http://localhost:8080/api',
-          username: 'student',
-          password: 'password',
-          client: mock,
+    final unlinkedClient = MockClient((request) async {
+      if (request.url.path == '/api/me') {
+        return http.Response(
+          jsonEncode({
+            'username': 'student',
+            'roles': ['ROLE_STUDENT'],
+          }),
+          200,
+        );
+      }
+      return http.Response('', 409);
+    });
+    final api = await StudentApiClient.signIn(
+      apiBaseUrl: 'http://localhost:8080/api',
+      username: 'student',
+      password: 'password',
+      client: unlinkedClient,
+    );
+    await expectLater(
+      api.loadSummary(),
+      throwsA(
+        isA<ApiException>().having(
+          (failure) => failure.message,
+          'message',
+          'Your student account is not linked to a student record. Contact the department administrator.',
         ),
-        throwsA(
-          isA<ApiException>().having(
-            (failure) => failure.message,
-            'message',
-            entry.value,
-          ),
+      ),
+    );
+    api.logout();
+  });
+
+  test('rejects malformed balance data instead of reporting a false zero',
+      () async {
+    final mock = MockClient((request) async => switch (request.url.path) {
+          '/api/me' => http.Response(
+              jsonEncode({
+                'username': 'student',
+                'roles': ['ROLE_STUDENT'],
+              }),
+              200,
+            ),
+          '/api/students/me/summary' => http.Response(
+              jsonEncode({
+                'username': 'student',
+                'student': const {},
+                'unpaidBalance': 'not-a-number',
+                'attendance': {
+                  'total': 0,
+                  'present': 0,
+                  'late': 0,
+                  'absent': 0,
+                  'excused': 0,
+                },
+              }),
+              200,
+            ),
+          _ => http.Response('[]', 200),
+        });
+
+    final api = await StudentApiClient.signIn(
+      apiBaseUrl: 'http://localhost:8080/api',
+      username: 'student',
+      password: 'password',
+      client: mock,
+    );
+
+    await expectLater(
+      api.loadSummary(),
+      throwsA(
+        isA<ApiException>().having(
+          (failure) => failure.message,
+          'message',
+          'The server returned student data in an unexpected format.',
         ),
+      ),
+    );
+    api.logout();
+  });
+
+  test('rejects malformed list rows instead of silently dropping them',
+      () async {
+    final mock = MockClient((request) async => switch (request.url.path) {
+          '/api/me' => http.Response(
+              jsonEncode({
+                'username': 'student',
+                'roles': ['ROLE_STUDENT'],
+              }),
+              200,
+            ),
+          '/api/students/me/ledger' => http.Response(
+              jsonEncode([
+                {'kind': 'FINE', 'amount': 100},
+                'invalid row',
+              ]),
+              200,
+            ),
+          _ => http.Response('[]', 200),
+        });
+
+    final api = await StudentApiClient.signIn(
+      apiBaseUrl: 'http://localhost:8080/api',
+      username: 'student',
+      password: 'password',
+      client: mock,
+    );
+
+    await expectLater(
+      api.loadLedger(),
+      throwsA(
+        isA<ApiException>().having(
+          (failure) => failure.message,
+          'message',
+          'The server returned a list in an unexpected format.',
+        ),
+      ),
+    );
+    api.logout();
+  });
+
+  test('logout clears credentials and prevents further API requests', () async {
+    var requests = 0;
+    final mock = MockClient((_) async {
+      requests++;
+      return http.Response(
+        jsonEncode({
+          'username': 'student',
+          'roles': ['ROLE_STUDENT'],
+        }),
+        200,
       );
-    }
+    });
+
+    final api = await StudentApiClient.signIn(
+      apiBaseUrl: 'http://localhost:8080/api',
+      username: 'student',
+      password: 'password',
+      client: mock,
+    );
+    api.logout();
+
+    await expectLater(
+      api.loadLedger(),
+      throwsA(
+        isA<ApiException>().having(
+          (failure) => failure.message,
+          'message',
+          'You have been signed out. Sign in again.',
+        ),
+      ),
+    );
+    expect(requests, 1);
   });
 }

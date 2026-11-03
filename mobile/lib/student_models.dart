@@ -134,10 +134,20 @@ class StudentAttendanceEntry {
 
 double _number(Object? value) {
   if (value is num) return value.toDouble();
-  return double.tryParse(value?.toString() ?? '') ?? 0;
+  final parsed = double.tryParse(value?.toString() ?? '');
+  if (parsed == null || !parsed.isFinite) {
+    throw const FormatException('Expected a valid numeric value.');
+  }
+  return parsed;
 }
 
 int _integer(Object? value) {
-  if (value is num) return value.toInt();
-  return int.tryParse(value?.toString() ?? '') ?? 0;
+  if (value is num && value.isFinite && value == value.roundToDouble()) {
+    return value.toInt();
+  }
+  final parsed = int.tryParse(value?.toString() ?? '');
+  if (parsed == null) {
+    throw const FormatException('Expected a valid whole number.');
+  }
+  return parsed;
 }

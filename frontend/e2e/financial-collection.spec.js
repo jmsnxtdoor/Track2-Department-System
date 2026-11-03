@@ -130,7 +130,10 @@ test('admin fine and treasurer collection stay consistent with portal, dashboard
     try {
       await flutterPage.goto('http://127.0.0.1:8083', { waitUntil: 'domcontentloaded' });
       await flutterPage.locator('flt-semantics-placeholder').evaluate(element => element.click());
-      await flutterPage.getByRole('textbox', { name: 'API server URL' }).fill('http://127.0.0.1:8082/api');
+      const apiUrl = flutterPage.getByRole('textbox', { name: 'API server URL' });
+      await apiUrl.click({ force: true });
+      await apiUrl.press('Control+A');
+      await apiUrl.pressSequentially('http://127.0.0.1:8082/api');
       const flutterUsername = flutterPage.getByRole('textbox', { name: 'Username' });
       await flutterUsername.click({ force: true });
       await flutterUsername.pressSequentially(accountName);
