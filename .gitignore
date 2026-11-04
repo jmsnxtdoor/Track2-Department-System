@@ -14,6 +14,7 @@
 *.log
 /coverage/
 /data/postgres/
+/data/postgresql/
 /database/backups/
 /note.txt
 /tools/jdk-21/
