@@ -62,6 +62,43 @@ class FinancialConcurrencyIntegrationTest {
     @Autowired private PlatformTransactionManager transactionManager;
 
     @Test
+    void concurrentRequestsWithSameLedgerAndFundKeysCreateOneRecordEach() throws Exception {
+        var auth = new UsernamePasswordAuthenticationToken("treasurer", "n/a");
+        Student student = new Student();
+        student.studentNumber = "IDEMP-" + UUID.randomUUID();
+        student.fullName = "Idempotency integration test";
+        student = students.saveAndFlush(student);
+        Long studentId = student.id;
+        String ledgerKey = UUID.randomUUID().toString();
+        String fundKey = UUID.randomUUID().toString();
+        ExecutorService executor = Executors.newFixedThreadPool(4);
+        try {
+            List<LedgerEntry> ledgerResults = submitConcurrent(executor, 4,
+                    () -> inTransaction(() -> api.addLedger(new Api.LedgerInput(
+                            studentId, LedgerEntry.Kind.FINE, new BigDecimal("25.00"),
+                            "Concurrent idempotent fine", null, ledgerKey), auth)));
+            assertEquals(1L, ledgerResults.stream().map(entry -> entry.id).distinct().count());
+            assertEquals(1L, ledger.findByStudentIdOrderByCreatedAtDesc(studentId).stream()
+                    .filter(entry -> ledgerKey.equals(entry.idempotencyKey)).count());
+
+            List<FundEntry> fundResults = submitConcurrent(executor, 4,
+                    () -> inTransaction(() -> api.addFund(new Api.FundInput(
+                            FundEntry.Type.ADDITION, new BigDecimal("25.00"),
+                            "Concurrent idempotent fund", fundKey), auth)));
+            assertEquals(1L, fundResults.stream().map(entry -> entry.id).distinct().count());
+            assertEquals(1L, funds.findByIdempotencyKey(fundKey).stream().count());
+            assertEquals(1L, funds.findAllByOrderByCreatedAtDesc().stream()
+                    .filter(entry -> fundKey.equals(entry.idempotencyKey)).count());
+        } finally {
+            executor.shutdownNow();
+            assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+            ledger.deleteAll(ledger.findByStudentIdOrderByCreatedAtDesc(studentId));
+            funds.findByIdempotencyKey(fundKey).ifPresent(funds::delete);
+            students.deleteById(studentId);
+        }
+    }
+
+    @Test
     void ledgerAndAuditWritesRollBackTogether() {
         var auth = new UsernamePasswordAuthenticationToken("treasurer", "n/a");
         long fundAuditCountBefore = audit.recent().stream()
@@ -90,7 +127,7 @@ class FinancialConcurrencyIntegrationTest {
         addition.description = "Rollback fund " + UUID.randomUUID();
         String fundDescription = addition.description;
         assertThrows(IllegalStateException.class, () -> inTransaction(() -> {
-            api.addFund(addition, auth);
+            api.addFund(new Api.FundInput(addition.type, addition.amount, addition.description), auth);
             throw new IllegalStateException("Force fund transaction rollback.");
         }));
         assertTrue(funds.findAll().stream().noneMatch(entry -> entry.description.equals(fundDescription)));
@@ -119,7 +156,7 @@ class FinancialConcurrencyIntegrationTest {
                 opening.type = FundEntry.Type.OPENING_BALANCE;
                 opening.amount = new BigDecimal("1000.00");
                 opening.description = "Empty-ledger opening balance";
-                api.addFund(opening, auth);
+                api.addFund(new Api.FundInput(opening.type, opening.amount, opening.description), auth);
                 return null;
             }));
 
@@ -132,7 +169,8 @@ class FinancialConcurrencyIntegrationTest {
                         disbursement.type = FundEntry.Type.DISBURSEMENT;
                         disbursement.amount = new BigDecimal("600.00");
                         disbursement.description = "Empty-ledger concurrent expense";
-                        return api.addFund(disbursement, auth);
+                        return api.addFund(new Api.FundInput(
+                                disbursement.type, disbursement.amount, disbursement.description), auth);
                     });
                 } finally {
                     secondTransactionCompleted.countDown();
@@ -206,7 +244,8 @@ class FinancialConcurrencyIntegrationTest {
             openingBalance.type = FundEntry.Type.OPENING_BALANCE;
             openingBalance.amount = new BigDecimal("100.00");
             openingBalance.description = "Concurrency test opening balance";
-            inTransaction(() -> api.addFund(openingBalance, auth));
+            inTransaction(() -> api.addFund(new Api.FundInput(
+                    openingBalance.type, openingBalance.amount, openingBalance.description), auth));
 
             for (int round = 0; round < ROUNDS; round++) {
                 assertEquals(1, runTogether(executor, REQUESTS_PER_ROUND, index -> {
@@ -215,7 +254,8 @@ class FinancialConcurrencyIntegrationTest {
                     expense.amount = new BigDecimal("60.00");
                     expense.description = "Concurrent test expense";
                     try {
-                        inTransaction(() -> api.addFund(expense, auth));
+                        inTransaction(() -> api.addFund(new Api.FundInput(
+                                expense.type, expense.amount, expense.description), auth));
                         return true;
                     } catch (ResponseStatusException failure) {
                         assertEquals(400, failure.getStatusCode().value());
@@ -232,7 +272,8 @@ class FinancialConcurrencyIntegrationTest {
                     addition.type = FundEntry.Type.ADDITION;
                     addition.amount = new BigDecimal("60.00");
                     addition.description = "Concurrency test replenishment";
-                    inTransaction(() -> api.addFund(addition, auth));
+                    inTransaction(() -> api.addFund(new Api.FundInput(
+                            addition.type, addition.amount, addition.description), auth));
                 }
             }
 
@@ -295,6 +336,26 @@ class FinancialConcurrencyIntegrationTest {
 
     private <T> T inTransaction(Supplier<T> operation) {
         return new TransactionTemplate(transactionManager).execute(status -> operation.get());
+    }
+
+    private <T> List<T> submitConcurrent(ExecutorService executor, int count, Supplier<T> operation) throws Exception {
+        CountDownLatch ready = new CountDownLatch(count);
+        CountDownLatch start = new CountDownLatch(1);
+        List<Future<T>> futures = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            futures.add(executor.submit(() -> {
+                ready.countDown();
+                if (!start.await(10, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("Concurrent idempotency test did not start.");
+                }
+                return operation.get();
+            }));
+        }
+        assertTrue(ready.await(10, TimeUnit.SECONDS));
+        start.countDown();
+        List<T> results = new ArrayList<>();
+        for (Future<T> future : futures) results.add(future.get(15, TimeUnit.SECONDS));
+        return results;
     }
 
     private void awaitLatch(CountDownLatch latch) {

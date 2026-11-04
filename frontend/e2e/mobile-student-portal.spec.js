@@ -5,6 +5,7 @@ import {
   apiBaseUrl,
   authenticatedApi,
   createStudent,
+  newIdempotencyKey,
   testPassword,
 } from './financial-helpers.js';
 
@@ -49,6 +50,7 @@ test('student portal shows linked profile, balance, QR, and attendance after log
         amount: 100,
         description: 'Mobile portal test fine',
         referenceNumber: `PORTAL-FINE-${studentSuffix}`,
+        idempotencyKey: newIdempotencyKey(),
       },
     })).status()).toBe(201);
     expect((await treasurerApi.post('/api/finance/ledger', {
@@ -58,6 +60,7 @@ test('student portal shows linked profile, balance, QR, and attendance after log
         amount: 40,
         description: 'Mobile portal test payment',
         referenceNumber: `PORTAL-PAY-${studentSuffix}`,
+        idempotencyKey: newIdempotencyKey(),
       },
     })).status()).toBe(201);
 

@@ -1,5 +1,6 @@
 package edu.department.portal;
 
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
@@ -14,6 +15,13 @@ import java.util.stream.Collectors;
 
 @RestControllerAdvice
 class ApiExceptionHandler {
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    ResponseEntity<ProblemDetail> handleConflict(DataIntegrityViolationException exception) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+                HttpStatus.CONFLICT, "A record with the same unique value already exists.");
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(problem);
+    }
+
     @ExceptionHandler(ResponseStatusException.class)
     ResponseEntity<ProblemDetail> handleStatus(ResponseStatusException exception) {
         String detail = Objects.requireNonNullElse(exception.getReason(), exception.getStatusCode().toString());

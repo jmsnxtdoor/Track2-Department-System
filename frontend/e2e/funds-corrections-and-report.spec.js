@@ -5,6 +5,7 @@ import {
   addFundEntry,
   authenticatedApi,
   navigate,
+  newIdempotencyKey,
   signIn,
   testPassword,
 } from './financial-helpers.js';
@@ -35,16 +36,16 @@ test('corrects fund entries and verifies report export, printing, and audit reco
     await expect(expenseRow).toContainText('Correction recorded');
 
     const reverseAddition = await adminApi.post(`/api/finance/funds/${additionEntry.id}/reverse`, {
-      data: { reason: 'Correct the E2E income' },
+      data: { reason: 'Correct the E2E income', idempotencyKey: newIdempotencyKey() },
     });
     expect(reverseAddition.status()).toBe(201);
     const duplicateReversal = await adminApi.post(`/api/finance/funds/${additionEntry.id}/reverse`, {
-      data: { reason: 'Duplicate correction' },
+      data: { reason: 'Duplicate correction', idempotencyKey: newIdempotencyKey() },
     });
     expect(duplicateReversal.status()).toBe(409);
     expect((await duplicateReversal.json()).detail).toBe('This fund entry has already been reversed.');
     const missingReversal = await adminApi.post('/api/finance/funds/999999999/reverse', {
-      data: { reason: 'Unknown record' },
+      data: { reason: 'Unknown record', idempotencyKey: newIdempotencyKey() },
     });
     expect(missingReversal.status()).toBe(404);
     expect((await missingReversal.json()).detail).toBe('Fund entry not found.');

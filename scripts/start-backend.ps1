@@ -6,37 +6,18 @@ $ErrorActionPreference = 'Stop'
 
 $parsedServerAddress = $null
 
-if (-not [System.Net.IPAddress]::TryParse($ServerAddress, [ref]$parsedServerAddress) -or
+if ($ServerAddress -cne '127.0.0.1' -or
+    -not [System.Net.IPAddress]::TryParse($ServerAddress, [ref]$parsedServerAddress) -or
     $parsedServerAddress.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) {
-    throw 'ServerAddress must be an IPv4 address assigned to this computer.'
-}
-
-if ($ServerAddress -ne '127.0.0.1') {
-    $addressBytes = $parsedServerAddress.GetAddressBytes()
-    $isPrivateAddress = $addressBytes[0] -eq 10 -or
-        ($addressBytes[0] -eq 172 -and $addressBytes[1] -ge 16 -and $addressBytes[1] -le 31) -or
-        ($addressBytes[0] -eq 192 -and $addressBytes[1] -eq 168)
-    if (-not $isPrivateAddress) {
-        throw 'LAN binding requires a private RFC 1918 IPv4 address.'
-    }
-
-    $localAddress = Get-NetIPAddress -AddressFamily IPv4 -IPAddress $ServerAddress -ErrorAction SilentlyContinue |
-        Select-Object -First 1
-    if ($null -eq $localAddress) {
-        throw 'LAN binding requires an IPv4 address assigned to this computer.'
-    }
-
-    $connectionProfile = Get-NetConnectionProfile -InterfaceIndex $localAddress.InterfaceIndex -ErrorAction SilentlyContinue |
-        Select-Object -First 1
-    if ($null -eq $connectionProfile -or $connectionProfile.NetworkCategory -ne 'Private') {
-        throw 'LAN binding is allowed only on a Windows network profile classified as Private.'
-    }
+    throw 'Spring Boot must remain bound to 127.0.0.1; LAN clients must use the HTTPS Vite proxy.'
 }
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $backendDirectory = Join-Path $projectRoot 'backend'
+$databaseDataDirectory = Join-Path $projectRoot 'data\postgres'
 $databaseEnvPath = Join-Path $projectRoot 'database\.env'
 $backendEnvPath = Join-Path $backendDirectory '.env'
+$corsEnvPath = Join-Path $backendDirectory '.env.cors.local'
 $javaHome = Join-Path $projectRoot 'tools\jdk-21'
 $maven = 'C:\Maven\apache-maven-3.9.9\bin\mvn.cmd'
 $mavenRepository = Join-Path $projectRoot 'tools\maven-repo'
@@ -107,6 +88,61 @@ function Read-EnvFile([string]$Path) {
 
 $databaseSettings = Read-EnvFile $databaseEnvPath
 $accountSettings = Read-EnvFile $backendEnvPath
+$corsSettings = Read-EnvFile $corsEnvPath
+$missingConfiguration = @()
+foreach ($setting in @(
+    [pscustomobject]@{ Name = 'DATABASE_URL'; Value = $databaseSettings['DATABASE_URL'] },
+    [pscustomobject]@{ Name = 'DATABASE_USER'; Value = $databaseSettings['DATABASE_USER'] },
+    [pscustomobject]@{ Name = 'DATABASE_PASSWORD'; Value = $databaseSettings['DATABASE_PASSWORD'] },
+    [pscustomobject]@{ Name = 'CORS_ORIGIN'; Value = $corsSettings['CORS_ORIGIN'] }
+)) {
+    if ([string]::IsNullOrWhiteSpace($setting.Value)) {
+        $missingConfiguration += $setting.Name
+    }
+}
+if ($missingConfiguration.Count -gt 0) {
+    throw "Required local configuration values are missing: $($missingConfiguration -join ', ')."
+}
+$corsOrigins = @(
+    $corsSettings['CORS_ORIGIN'].Split(',') |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+)
+
+if ($corsOrigins.Count -eq 0 -or $corsOrigins.Count -ne @($corsOrigins | Select-Object -Unique).Count) {
+    throw 'Refusing to start: the local CORS allowlist is empty or contains duplicate origins.'
+}
+
+foreach ($corsOrigin in $corsOrigins) {
+    $parsedOrigin = $null
+    if (-not [System.Uri]::TryCreate($corsOrigin, [System.UriKind]::Absolute, [ref]$parsedOrigin) -or
+        $parsedOrigin.Scheme -cne 'https' -or
+        $parsedOrigin.Port -ne 5173 -or
+        $parsedOrigin.UserInfo -or
+        $parsedOrigin.Query -or
+        $parsedOrigin.Fragment -or
+        $corsOrigin -cne $parsedOrigin.GetLeftPart([System.UriPartial]::Authority)) {
+        throw 'Refusing to start: each local CORS origin must be an exact HTTPS origin on port 5173.'
+    }
+
+    if ($parsedOrigin.Host -ceq '127.0.0.1') {
+        continue
+    }
+
+    $originAddress = $null
+    if (-not [System.Net.IPAddress]::TryParse($parsedOrigin.Host, [ref]$originAddress) -or
+        $originAddress.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) {
+        throw 'Refusing to start: local CORS origins must use 127.0.0.1 or a private IPv4 address.'
+    }
+
+    $originBytes = $originAddress.GetAddressBytes()
+    $originIsPrivate = $originBytes[0] -eq 10 -or
+        ($originBytes[0] -eq 172 -and $originBytes[1] -ge 16 -and $originBytes[1] -le 31) -or
+        ($originBytes[0] -eq 192 -and $originBytes[1] -eq 168)
+    if (-not $originIsPrivate) {
+        throw 'Refusing to start: local CORS origins must use 127.0.0.1 or a private IPv4 address.'
+    }
+}
 
 if ($databaseSettings['DATABASE_URL'] -cne $expectedDatabaseUrl) {
     throw 'Refusing to start: DATABASE_URL is not the approved Track 2 development database.'
@@ -114,12 +150,6 @@ if ($databaseSettings['DATABASE_URL'] -cne $expectedDatabaseUrl) {
 if ($databaseSettings['DATABASE_USER'] -cne 'track2_app' -or
     [string]::IsNullOrWhiteSpace($databaseSettings['DATABASE_PASSWORD'])) {
     throw 'Refusing to start: Track 2 database credentials are incomplete or unexpected.'
-}
-
-foreach ($key in @('ADMIN_PASSWORD', 'TREASURER_PASSWORD', 'OFFICER_PASSWORD', 'STUDENT_PASSWORD')) {
-    if ([string]::IsNullOrWhiteSpace($accountSettings[$key])) {
-        throw "Required development account credential '$key' is missing."
-    }
 }
 
 foreach ($path in @(
@@ -144,9 +174,21 @@ if ($listeners.Count -gt 0) {
     throw 'Refusing to start: port 8080 is already in use.'
 }
 
-$databaseListeners = @(Get-NetTCPConnection -State Listen -LocalPort 55432 -ErrorAction SilentlyContinue)
+$postmasterPidPath = Join-Path $databaseDataDirectory 'postmaster.pid'
+if (-not (Test-Path -LiteralPath $postmasterPidPath -PathType Leaf)) {
+    throw 'Refusing to start: the isolated PostgreSQL server PID file is missing.'
+}
+$postmasterPidText = (Get-Content -LiteralPath $postmasterPidPath -TotalCount 1).Trim()
+$postmasterPid = 0
+if (-not [int]::TryParse($postmasterPidText, [ref]$postmasterPid) -or $postmasterPid -le 0) {
+    throw 'Refusing to start: the isolated PostgreSQL server PID file is invalid.'
+}
+
+$databaseListeners = @(Get-NetTCPConnection -LocalPort 55432 -ErrorAction SilentlyContinue)
 if ($databaseListeners.Count -eq 0 -or
-    @($databaseListeners | Where-Object { $_.LocalAddress -ne '127.0.0.1' }).Count -gt 0) {
+    @($databaseListeners | Where-Object {
+        $_.LocalAddress -ne '127.0.0.1' -or $_.OwningProcess -ne $postmasterPid
+    }).Count -gt 0) {
     throw 'Refusing to start: the isolated database is not listening only on 127.0.0.1:55432.'
 }
 
@@ -156,7 +198,7 @@ try {
     $databaseIdentityOutput = @(
         & $psql --no-psqlrc --quiet --tuples-only --no-align --set=ON_ERROR_STOP=1 `
             --host=127.0.0.1 --port=55432 --username=track2_app --dbname=track2_department `
-            --command="SELECT json_build_object('user',current_user,'database',current_database(),'host',host(inet_server_addr()),'port',inet_server_port())::text;"
+            --command="SELECT json_build_object('user',current_user,'database',current_database(),'host',host(inet_server_addr()),'port',inet_server_port(),'listen_addresses',current_setting('listen_addresses'),'configured_port',current_setting('port'),'existing_seed_accounts',(SELECT COALESCE(json_agg(username ORDER BY username),'[]'::json) FROM public.app_user WHERE username IN ('admin','treasurer','officer','student')))::text;"
     )
     $psqlExitCode = $LASTEXITCODE
 }
@@ -172,8 +214,29 @@ $databaseIdentity = (($databaseIdentityOutput -join "`n").Trim() | ConvertFrom-J
 if ($databaseIdentity.user -ne 'track2_app' -or
     $databaseIdentity.database -ne 'track2_department' -or
     $databaseIdentity.host -ne '127.0.0.1' -or
-    [int]$databaseIdentity.port -ne 55432) {
+    [int]$databaseIdentity.port -ne 55432 -or
+    $databaseIdentity.listen_addresses -ne '127.0.0.1' -or
+    [int]$databaseIdentity.configured_port -ne 55432) {
     throw 'Authenticated database identity did not match the approved Track 2 target.'
+}
+
+$seedAccounts = [ordered]@{
+    admin = 'ADMIN_PASSWORD'
+    treasurer = 'TREASURER_PASSWORD'
+    officer = 'OFFICER_PASSWORD'
+    student = 'STUDENT_PASSWORD'
+}
+$existingSeedAccounts = @($databaseIdentity.existing_seed_accounts)
+$missingAccountCredentials = @(
+    foreach ($username in $seedAccounts.Keys) {
+        if ($existingSeedAccounts -cnotcontains $username -and
+            [string]::IsNullOrWhiteSpace($accountSettings[$seedAccounts[$username]])) {
+            $seedAccounts[$username]
+        }
+    }
+)
+if ($missingAccountCredentials.Count -gt 0) {
+    throw "Missing development account credentials for accounts that do not yet exist: $($missingAccountCredentials -join ', ')."
 }
 
 $env:JAVA_HOME = $javaHome
@@ -188,6 +251,7 @@ $env:STUDENT_PASSWORD = $accountSettings['STUDENT_PASSWORD']
 $env:SPRING_PROFILES_ACTIVE = 'dev'
 $env:SERVER_ADDRESS = $ServerAddress
 $env:PORT = '8080'
+$env:CORS_ORIGIN = $corsOrigins -join ','
 
 if (-not (Test-Path -LiteralPath $mavenRepository -PathType Container)) {
     New-Item -ItemType Directory -Path $mavenRepository -Force | Out-Null

@@ -5,6 +5,7 @@ import { useDisplay } from 'vuetify';
 import { setRequestFailure } from './requestState.js';
 import { saveUserAccount } from './userAccounts.js';
 import { fetchExternalJson } from './externalApi.js';
+import { clearIdempotencyKey, getIdempotencyKey } from './idempotency.js';
 
 const api = axios.create({ baseURL: import.meta.env.VITE_API_URL || '/api' });
 const { mdAndUp } = useDisplay();
@@ -26,6 +27,7 @@ const funds = ref([]);
 const events = ref([]);
 const records = ref([]);
 const stats = ref({});
+const studentPortal = ref({ summary: null, ledger: [], attendance: [] });
 const users = ref([]);
 const auditLogs = ref([]);
 const reportData = ref({ students: [], finance: null, funds: [], attendance: [] });
@@ -152,13 +154,38 @@ const studentLinkOptions = computed(() => students.value.map(student => ({
 const chartMaximum = computed(() => Math.max(1, ...(stats.value.collectionChart || []).map(item => Number(item.amount))));
 const hasCollectionActivity = computed(() =>
   (stats.value.collectionChart || []).some(item => Number(item.amount) !== 0));
-const reportOptions = [
-  { title: 'Students', value: 'Students' },
-  { title: 'Student fines and payments', value: 'Fines & Collections' },
-  { title: 'Unpaid balances', value: 'Unpaid Balances' },
-  { title: 'Department funds and expenses', value: 'Funds & Disbursements' },
-  { title: 'Attendance by activity', value: 'Attendance per Event' },
-];
+const reportOptions = computed(() => {
+  const options = [{ title: 'Students', value: 'Students' }];
+  if (['ADMIN', 'TREASURER'].includes(role.value)) {
+    options.push(
+      { title: 'Student fines and payments', value: 'Fines & Collections' },
+      { title: 'Unpaid balances', value: 'Unpaid Balances' },
+      { title: 'Department funds and expenses', value: 'Funds & Disbursements' },
+    );
+  }
+  if (['ADMIN', 'OFFICER'].includes(role.value)) {
+    options.push({ title: 'Attendance by activity', value: 'Attendance per Event' });
+  }
+  return options;
+});
+const dashboardCards = computed(() => {
+  const cards = [];
+  if (['ADMIN', 'TREASURER'].includes(role.value)) {
+    cards.push(
+      { title: 'Total payments collected', value: money(stats.value.collections), icon: 'mdi-cash-check' },
+      { title: 'Fund balance', value: money(stats.value.fundBalance), icon: 'mdi-bank-outline' },
+      { title: 'Unpaid balances', value: money(stats.value.unpaid), icon: 'mdi-cash-clock' },
+    );
+  }
+  if (['ADMIN', 'OFFICER'].includes(role.value)) {
+    cards.push({
+      title: 'Attendance rate',
+      value: `${stats.value.attendanceRate || 0}%`,
+      icon: 'mdi-calendar-check-outline',
+    });
+  }
+  return cards;
+});
 const statuses = ['PRESENT', 'LATE', 'ABSENT', 'EXCUSED'];
 const attendanceStatusOptions = statuses.map(value => ({
   title: value.charAt(0) + value.slice(1).toLowerCase(),
@@ -177,6 +204,8 @@ function friendlyError(failure) {
   const knownMessages = {
     'Payment exceeds unpaid balance.': "This payment is more than the student's unpaid balance. Check the balance and enter a smaller amount.",
     'Transaction reference already exists.': 'This reference number is already in use. Enter a different reference number.',
+    'Idempotency key was already used with different transaction details.': 'This retry key belongs to a different transaction. Review the details and submit again.',
+    'A record with the same unique value already exists.': 'A duplicate request or reference was detected. Refresh and verify the transaction before retrying.',
     'A reversal cannot itself be reversed.': 'A correction entry cannot be corrected again.',
     'This transaction has already been reversed.': 'This transaction already has a correction entry.',
     'The fine cannot be reversed because part of it has already been paid.': 'This fine cannot be corrected because part of it has already been paid.',
@@ -319,6 +348,9 @@ async function logout() {
   records.value = [];
   users.value = [];
   auditLogs.value = [];
+  stats.value = {};
+  studentPortal.value = { summary: null, ledger: [], attendance: [] };
+  reportData.value = { students: [], finance: null, funds: [], attendance: [] };
   externalApiToken.value = '';
   externalApiResult.value = null;
   externalApiError.value = '';
@@ -327,11 +359,22 @@ async function logout() {
 async function refresh() {
   if (!auth.value) return;
   try {
+    ledger.value = [];
+    funds.value = [];
+    events.value = [];
+    records.value = [];
+    reportData.value = { students: [], finance: null, funds: [], attendance: [] };
     if (role.value === 'STUDENT') {
-      stats.value = await request('get', '/students/me/balance');
+      const [summary, ledgerRows, attendanceRows] = await Promise.all([
+        request('get', '/students/me/summary'),
+        request('get', '/students/me/ledger'),
+        request('get', '/students/me/attendance'),
+      ]);
+      studentPortal.value = { summary, ledger: ledgerRows, attendance: attendanceRows };
       page.value = 'My Account';
       return;
     }
+    studentPortal.value = { summary: null, ledger: [], attendance: [] };
     const [studentRows, dashboard] = await Promise.all([
       request('get', '/students'),
       request('get', '/dashboard'),
@@ -403,12 +446,18 @@ async function submitLedger() {
   ledgerSubmitting.value = true;
   const kind = page.value === 'Fines' ? 'FINE' : 'PAYMENT';
   try {
-    await request('post', '/finance/ledger', { ...entry.value, kind });
+    const details = { ...entry.value, kind };
+    const storageKey = `track2-idempotency-ledger-${username.value}`;
+    const idempotencyKey = await getIdempotencyKey(localStorage, storageKey, details);
+    await request('post', '/finance/ledger', { ...details, idempotencyKey });
+    clearIdempotencyKey(localStorage, storageKey, idempotencyKey);
     entry.value = { studentId: null, amount: null, description: '', referenceNumber: '' };
     await refresh();
     notice.value = kind === 'FINE' ? 'Fine recorded.' : 'Payment recorded.';
-  } catch {
-    // Keep entered values after a rejected transaction.
+  } catch (failure) {
+    if (!failure.response && !error.value) {
+      error.value = failure.message || 'Secure transaction retry protection is unavailable.';
+    }
   } finally {
     ledgerSubmitting.value = false;
   }
@@ -419,12 +468,18 @@ async function submitFund() {
   fundSubmitting.value = true;
   const type = page.value === 'Disbursements' ? 'DISBURSEMENT' : fund.value.type;
   try {
-    await request('post', '/finance/funds', { ...fund.value, type });
+    const details = { ...fund.value, type };
+    const storageKey = `track2-idempotency-fund-${username.value}`;
+    const idempotencyKey = await getIdempotencyKey(localStorage, storageKey, details);
+    await request('post', '/finance/funds', { ...details, idempotencyKey });
+    clearIdempotencyKey(localStorage, storageKey, idempotencyKey);
     fund.value = { type: 'ADDITION', amount: null, description: '' };
     await refresh();
     notice.value = type === 'DISBURSEMENT' ? 'Expense recorded.' : 'Fund entry recorded.';
-  } catch {
-    // Keep entered values after a rejected transaction.
+  } catch (failure) {
+    if (!failure.response && !error.value) {
+      error.value = failure.message || 'Secure transaction retry protection is unavailable.';
+    }
   } finally {
     fundSubmitting.value = false;
   }
@@ -436,8 +491,10 @@ async function createEvent() {
     eventForm.value = { title: '', eventDate: new Date().toISOString().slice(0, 10), active: true };
     notice.value = 'Attendance activity created.';
     await refresh();
-  } catch {
-    // Keep entered values after a rejected request.
+  } catch (failure) {
+    if (!failure.response && !error.value) {
+      error.value = failure.message || 'Secure transaction retry protection is unavailable.';
+    }
   }
 }
 
@@ -557,23 +614,33 @@ function isReversed(item, type) {
 async function reverseTransaction() {
   if (!reverseTarget.value) return;
   const route = reverseType.value === 'ledger' ? '/finance/ledger' : '/finance/funds';
+  const storageKey = `track2-idempotency-reversal-${username.value}-${reverseType.value}-${reverseTarget.value.id}`;
   try {
-    await request('post', `${route}/${reverseTarget.value.id}/reverse`, { reason: reverseReason.value });
+    const details = { reason: reverseReason.value.trim() };
+    const idempotencyKey = await getIdempotencyKey(localStorage, storageKey, details);
+    await request('post', `${route}/${reverseTarget.value.id}/reverse`, { ...details, idempotencyKey });
+    clearIdempotencyKey(localStorage, storageKey, idempotencyKey);
     reverseDialog.value = false;
     notice.value = 'A correction entry was added. The original transaction remains recorded.';
     await refresh();
-  } catch {
-    // Keep the dialog open so the reason or target can be reviewed.
+  } catch (failure) {
+    if (!failure.response && !error.value) {
+      error.value = failure.message || 'Secure transaction retry protection is unavailable.';
+    }
   }
 }
 
 async function loadReports() {
+  if (!['ADMIN', 'TREASURER', 'OFFICER'].includes(role.value)) return;
+  if (!reportOptions.value.some(option => option.value === reportKind.value)) {
+    reportKind.value = 'Students';
+  }
   try {
     const [studentRows, finance, fundRows, attendanceRows] = await Promise.all([
       request('get', '/reports/students'),
-      request('get', '/reports/finance'),
-      request('get', '/reports/funds'),
-      request('get', '/reports/attendance'),
+      ['ADMIN', 'TREASURER'].includes(role.value) ? request('get', '/reports/finance') : Promise.resolve(null),
+      ['ADMIN', 'TREASURER'].includes(role.value) ? request('get', '/reports/funds') : Promise.resolve([]),
+      ['ADMIN', 'OFFICER'].includes(role.value) ? request('get', '/reports/attendance') : Promise.resolve([]),
     ]);
     reportData.value = {
       students: studentRows,
@@ -751,20 +818,15 @@ onBeforeUnmount(() => {
 
           <template v-if="page === 'Dashboard'">
             <v-row>
-              <v-col v-for="card in [
-                { title: 'Total payments collected', value: money(stats.collections), icon: 'mdi-cash-check' },
-                { title: 'Fund balance', value: money(stats.fundBalance), icon: 'mdi-bank-outline' },
-                { title: 'Unpaid balances', value: money(stats.unpaid), icon: 'mdi-cash-clock' },
-                { title: 'Attendance rate', value: `${stats.attendanceRate || 0}%`, icon: 'mdi-calendar-check-outline' },
-              ]" :key="card.title" cols="12" sm="6" md="3">
+              <v-col v-for="card in dashboardCards" :key="card.title" cols="12" sm="6" md="3">
                 <v-card class="metric-card pa-5">
                   <div class="metric-heading"><span>{{ card.title }}</span><v-icon :icon="card.icon" color="primary" size="21" /></div>
                   <div class="metric-value">{{ card.value }}</div>
-                  <p v-if="card.title === 'Attendance rate'" class="muted text-caption mt-2">Share of possible check-ins for active activities marked Present or Late.</p>
+                  <p v-if="card.title === 'Attendance rate'" class="muted text-caption mt-2">Share of possible check-ins for active activities marked Present or Late. Total scans: {{ stats.attendanceScans || 0 }}.</p>
                 </v-card>
               </v-col>
             </v-row>
-            <v-row class="mt-1">
+            <v-row v-if="['ADMIN', 'TREASURER'].includes(role)" class="mt-1">
               <v-col cols="12" md="6">
                 <v-card class="pa-5 h-100">
                   <h3>Payments collected by month</h3>
@@ -1057,7 +1119,58 @@ onBeforeUnmount(() => {
           </template>
 
           <template v-else-if="page === 'My Account'">
-            <v-card class="pa-6"><h3>Student Portal</h3><p class="muted mt-3">{{ stats.message }}</p></v-card>
+            <template v-if="studentPortal.summary">
+              <v-row>
+                <v-col cols="12" md="8">
+                  <v-card class="pa-5 h-100">
+                    <h3>My profile</h3>
+                    <v-list density="compact">
+                      <v-list-item title="Student ID" :subtitle="studentPortal.summary.student.studentNumber" />
+                      <v-list-item title="Full name" :subtitle="studentPortal.summary.student.fullName" />
+                      <v-list-item title="Course" :subtitle="studentPortal.summary.student.course || '—'" />
+                      <v-list-item title="Year level" :subtitle="studentPortal.summary.student.yearLevel || '—'" />
+                      <v-list-item title="Section" :subtitle="studentPortal.summary.student.section || '—'" />
+                    </v-list>
+                  </v-card>
+                </v-col>
+                <v-col cols="12" md="4">
+                  <v-card class="pa-5 h-100">
+                    <h3>My unpaid balance</h3>
+                    <div class="metric-value mt-4">{{ money(studentPortal.summary.unpaidBalance) }}</div>
+                    <p class="muted mt-3">Attendance: {{ studentPortal.summary.attendance.present }} present, {{ studentPortal.summary.attendance.late }} late, {{ studentPortal.summary.attendance.absent }} absent, {{ studentPortal.summary.attendance.excused }} excused.</p>
+                  </v-card>
+                </v-col>
+              </v-row>
+              <v-card class="pa-4 mt-4 scroll-table">
+                <h3 class="mb-3">My fines and payments</h3>
+                <v-table density="compact">
+                  <thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Description</th><th>Reference</th></tr></thead>
+                  <tbody>
+                    <tr v-for="item in studentPortal.ledger" :key="item.id">
+                      <td>{{ item.createdAt?.slice(0, 10) }}</td><td>{{ typeLabel(item.kind) }}</td>
+                      <td>{{ money(item.amount) }}</td><td>{{ item.description }}</td><td>{{ item.referenceNumber }}</td>
+                    </tr>
+                    <tr v-if="!studentPortal.ledger.length"><td colspan="5" class="text-center muted py-6">No fines or payments recorded.</td></tr>
+                  </tbody>
+                </v-table>
+              </v-card>
+              <v-card class="pa-4 mt-4 scroll-table">
+                <h3 class="mb-3">My attendance</h3>
+                <v-table density="compact">
+                  <thead><tr><th>Date</th><th>Activity</th><th>Check-in time</th><th>Status</th></tr></thead>
+                  <tbody>
+                    <tr v-for="(item, index) in studentPortal.attendance" :key="`${item.scannedAt}-${index}`">
+                      <td>{{ item.activityDate }}</td><td>{{ item.activityName }}</td><td>{{ item.scannedAt?.replace('T', ' ') }}</td><td>{{ item.status }}</td>
+                    </tr>
+                    <tr v-if="!studentPortal.attendance.length"><td colspan="4" class="text-center muted py-6">No attendance records yet.</td></tr>
+                  </tbody>
+                </v-table>
+              </v-card>
+            </template>
+            <v-card v-else class="pa-6">
+              <h3>Student Portal</h3>
+              <p class="muted mt-3">Your student account is not linked to a student record. Contact the department administrator.</p>
+            </v-card>
           </template>
         </div>
       </v-main>

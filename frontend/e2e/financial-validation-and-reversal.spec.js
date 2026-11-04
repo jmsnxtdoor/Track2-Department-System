@@ -4,6 +4,7 @@ import {
   addLedgerEntry,
   authenticatedApi,
   createStudent,
+  newIdempotencyKey,
   testPassword,
 } from './financial-helpers.js';
 
@@ -55,20 +56,26 @@ test('rejects invalid and excess payments and offsets corrections in reports and
     expect((await zeroBalancePayment.json()).detail).toBe('Payment exceeds unpaid balance.');
 
     const fullEntry = await full.json();
+    const fullReversalKey = newIdempotencyKey();
     const reversalResponse = await treasurerApi.post(`/api/finance/ledger/${fullEntry.id}/reverse`, {
-      data: { reason: 'Correct test payment' },
+      data: { reason: 'Correct test payment', idempotencyKey: fullReversalKey },
     });
     expect(reversalResponse.status()).toBe(201);
+    const retryReversal = await treasurerApi.post(`/api/finance/ledger/${fullEntry.id}/reverse`, {
+      data: { reason: 'Correct test payment', idempotencyKey: fullReversalKey },
+    });
+    expect(retryReversal.status()).toBe(201);
+    expect((await retryReversal.json()).id).toBe((await reversalResponse.json()).id);
     const afterPaymentCorrection = await treasurerApi.get(`/api/students/${student.id}/balance`);
     expect(afterPaymentCorrection.status()).toBe(200);
     expect(Number((await afterPaymentCorrection.json()).balance)).toBe(60);
 
     const partialEntry = await partial.json();
     expect((await treasurerApi.post(`/api/finance/ledger/${partialEntry.id}/reverse`, {
-      data: { reason: 'Correct partial test payment' },
+      data: { reason: 'Correct partial test payment', idempotencyKey: newIdempotencyKey() },
     })).status()).toBe(201);
     expect((await treasurerApi.post(`/api/finance/ledger/${fineId}/reverse`, {
-      data: { reason: 'Remove original test fine' },
+      data: { reason: 'Remove original test fine', idempotencyKey: newIdempotencyKey() },
     })).status()).toBe(201);
 
     const ledger = await (await treasurerApi.get('/api/finance/ledger')).json();

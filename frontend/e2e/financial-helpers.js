@@ -37,14 +37,18 @@ export async function createStudent(api, label = 'Finance') {
 
 export async function addLedgerEntry(api, studentId, kind, amount, description, referenceNumber) {
   return api.post('/api/finance/ledger', {
-    data: { studentId, kind, amount, description, referenceNumber },
+    data: { studentId, kind, amount, description, referenceNumber, idempotencyKey: randomUUID() },
   });
 }
 
 export async function addFundEntry(api, type, amount, description) {
   return api.post('/api/finance/funds', {
-    data: { type, amount, description },
+    data: { type, amount, description, idempotencyKey: randomUUID() },
   });
+}
+
+export function newIdempotencyKey() {
+  return randomUUID();
 }
 
 export async function signIn(page, username, password) {

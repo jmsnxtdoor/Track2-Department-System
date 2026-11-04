@@ -21,11 +21,13 @@ interface StudentRepo extends JpaRepository<Student,Long>{
 interface LedgerRepo extends JpaRepository<LedgerEntry,Long>{
  List<LedgerEntry> findByStudentIdOrderByCreatedAtDesc(Long id);
  List<LedgerEntry> findAllByOrderByCreatedAtDesc();
+ Optional<LedgerEntry> findByIdempotencyKey(String idempotencyKey);
  boolean existsByDescriptionStartingWith(String prefix);
  boolean existsByReferenceNumber(String referenceNumber);
 }
 interface FundRepo extends JpaRepository<FundEntry,Long>{
  List<FundEntry> findAllByOrderByCreatedAtDesc();
+ Optional<FundEntry> findByIdempotencyKey(String idempotencyKey);
  @Query(value="SELECT 1 FROM pg_advisory_xact_lock(7284927612836491)",nativeQuery=true)
  Integer acquireFundLedgerLock();
  @Lock(LockModeType.PESSIMISTIC_WRITE)

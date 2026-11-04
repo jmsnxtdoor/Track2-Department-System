@@ -13,6 +13,22 @@ import static org.mockito.Mockito.*;
 
 class DevelopmentAccountSeederTest {
     @Test
+    void doesNotRequireSeedPasswordsWhenAllAccountsAlreadyExist() throws Exception {
+        UserRepo users = mock(UserRepo.class);
+        for (String username : new String[]{"admin", "treasurer", "officer", "student"}) {
+            UserAccount existing = new UserAccount();
+            existing.username = username;
+            when(users.findByUsername(username)).thenReturn(Optional.of(existing));
+        }
+
+        DevelopmentAccountSeeder seeder = new DevelopmentAccountSeeder(users, new BCryptPasswordEncoder(),
+                "", "", "", "");
+
+        assertDoesNotThrow(() -> seeder.run(new DefaultApplicationArguments(new String[0])));
+        verify(users, never()).save(any(UserAccount.class));
+    }
+
+    @Test
     void insertsOnlyMissingAccountsAndHashesTheirPasswords() throws Exception {
         UserRepo users = mock(UserRepo.class);
         BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();

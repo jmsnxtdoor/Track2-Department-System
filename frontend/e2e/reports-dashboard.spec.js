@@ -195,24 +195,50 @@ test('reconciles dashboard, reports, exports, permissions, and PostgreSQL-backed
     await page.emulateMedia({ media: 'screen' });
 
     for (const role of ['TREASURER', 'OFFICER']) {
+      const financialAccess = role === 'TREASURER';
       const api = await authenticatedApi(role.toLowerCase(), testPassword(role));
       roleApis.push(api);
       const dashboard = await (await api.get('/api/dashboard')).json();
-      expect(Number(dashboard.collections)).toBe(Number(baselineDashboard.collections) + 40);
-      expect(Number(dashboard.unpaid)).toBe(Number(baselineDashboard.unpaid) + 60);
-      expect(Number(dashboard.fundBalance)).toBe(Number(baselineDashboard.fundBalance) + 600);
-      for (const endpoint of ['/reports/summary', '/reports/students', '/reports/finance', '/reports/funds', '/reports/attendance']) {
-        expect((await api.get(`/api${endpoint}`)).status()).toBe(200);
+      if (financialAccess) {
+        expect(Number(dashboard.collections)).toBe(Number(baselineDashboard.collections) + 40);
+        expect(Number(dashboard.unpaid)).toBe(Number(baselineDashboard.unpaid) + 60);
+        expect(Number(dashboard.fundBalance)).toBe(Number(baselineDashboard.fundBalance) + 600);
+        expect(dashboard.attendanceRate).toBeUndefined();
+        expect((await api.get('/api/reports/finance')).status()).toBe(200);
+        expect((await api.get('/api/reports/funds')).status()).toBe(200);
+        expect((await api.get('/api/reports/attendance')).status()).toBe(403);
+      } else {
+        expect(dashboard.collections).toBeUndefined();
+        expect(dashboard.unpaid).toBeUndefined();
+        expect(dashboard.fundBalance).toBeUndefined();
+        expect(Number(dashboard.attendanceScans)).toBe(baselineDashboard.attendanceScans + 4);
+        expect(Number(dashboard.attendanceRate)).toBe(expectedAttendanceRate);
+        expect((await api.get('/api/reports/finance')).status()).toBe(403);
+        expect((await api.get('/api/reports/funds')).status()).toBe(403);
+        expect((await api.get('/api/reports/attendance')).status()).toBe(200);
       }
+      expect((await api.get('/api/reports/summary')).status()).toBe(200);
+      expect((await api.get('/api/reports/students')).status()).toBe(200);
 
       await signOut(page);
       await signIn(page, role.toLowerCase(), testPassword(role));
-      await expect(page.locator('.metric-card').filter({ hasText: 'Total payments collected' }))
-        .toContainText(formatMoney(Number(baselineDashboard.collections) + 40));
+      const paymentMetric = page.locator('.metric-card').filter({ hasText: 'Total payments collected' });
+      const attendanceMetric = page.locator('.metric-card').filter({ hasText: 'Attendance rate' });
+      if (financialAccess) {
+        await expect(paymentMetric).toContainText(formatMoney(Number(baselineDashboard.collections) + 40));
+        await expect(attendanceMetric).toHaveCount(0);
+      } else {
+        await expect(paymentMetric).toHaveCount(0);
+        await expect(attendanceMetric).toBeVisible();
+      }
       await navigate(page, 'Dashboard');
       await page.getByRole('button', { name: 'Refresh' }).click();
-      await expect(page.locator('.metric-card').filter({ hasText: 'Unpaid balances' }))
-        .toContainText(formatMoney(Number(baselineDashboard.unpaid) + 60));
+      const unpaidMetric = page.locator('.metric-card').filter({ hasText: 'Unpaid balances' });
+      if (financialAccess) {
+        await expect(unpaidMetric).toContainText(formatMoney(Number(baselineDashboard.unpaid) + 60));
+      } else {
+        await expect(unpaidMetric).toHaveCount(0);
+      }
     }
 
     const fullFine = await addLedgerEntry(adminApi, students[1].id, 'FINE', 50, `${marker} paid fine`, `${marker}-FINE-FULL`);

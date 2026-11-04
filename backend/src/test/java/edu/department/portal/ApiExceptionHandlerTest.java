@@ -1,6 +1,7 @@
 package edu.department.portal;
 
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.web.server.ResponseStatusException;
@@ -27,5 +28,14 @@ class ApiExceptionHandlerTest {
 
         assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode());
         assertEquals("404 NOT_FOUND", response.getBody().getDetail());
+    }
+
+    @Test
+    void translatesUniqueConstraintRaceToClearConflict() {
+        var response = handler.handleConflict(new DataIntegrityViolationException("duplicate key"));
+
+        assertEquals(HttpStatus.CONFLICT, response.getStatusCode());
+        assertEquals("A record with the same unique value already exists.",
+                response.getBody().getDetail());
     }
 }

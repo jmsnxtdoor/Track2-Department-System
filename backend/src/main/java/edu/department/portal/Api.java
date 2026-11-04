@@ -10,6 +10,10 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.math.BigDecimal;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.YearMonth;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -114,9 +118,30 @@ public class Api {
             @NotNull LedgerEntry.Kind kind,
             @NotNull @DecimalMin("0.01") @Digits(integer = 12, fraction = 2) BigDecimal amount,
             @NotBlank @Size(max = 255) String description,
-            @Size(max = 255) String referenceNumber) {}
+            @Size(max = 255) String referenceNumber,
+            @NotBlank @Size(max = 100) String idempotencyKey) {
+        LedgerInput(Long studentId, LedgerEntry.Kind kind, BigDecimal amount, String description, String referenceNumber) {
+            this(studentId, kind, amount, description, referenceNumber, UUID.randomUUID().toString());
+        }
+    }
 
-    public record ReasonInput(@NotBlank @Size(max = 200) String reason) {}
+    public record FundInput(
+            @NotNull FundEntry.Type type,
+            @NotNull @DecimalMin("0.01") @Digits(integer = 12, fraction = 2) BigDecimal amount,
+            @NotBlank @Size(max = 255) String description,
+            @NotBlank @Size(max = 100) String idempotencyKey) {
+        FundInput(FundEntry.Type type, BigDecimal amount, String description) {
+            this(type, amount, description, UUID.randomUUID().toString());
+        }
+    }
+
+    public record ReasonInput(
+            @NotBlank @Size(max = 200) String reason,
+            @NotBlank @Size(max = 100) String idempotencyKey) {
+        ReasonInput(String reason) {
+            this(reason, UUID.randomUUID().toString());
+        }
+    }
 
     @GetMapping("/finance/ledger")
     public List<LedgerEntry> allLedger() {
@@ -127,8 +152,19 @@ public class Api {
     @ResponseStatus(HttpStatus.CREATED)
     @Transactional
     public LedgerEntry addLedger(@Valid @RequestBody LedgerInput input, Authentication auth) {
+        return createLedger(input, auth);
+    }
+
+    private LedgerEntry createLedger(LedgerInput input, Authentication auth) {
+        String requestHash = requestHash("ledger", auth.getName(), input.studentId().toString(), input.kind().name(),
+                normalizedAmount(input.amount()), input.description().trim(), normalizedReference(input.referenceNumber()));
+        LedgerEntry replay = ledger.findByIdempotencyKey(input.idempotencyKey()).orElse(null);
+        if (replay != null) return replayIfSame(replay, requestHash);
+
         Student student = students.findByIdForUpdate(input.studentId())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Student not found."));
+        replay = ledger.findByIdempotencyKey(input.idempotencyKey()).orElse(null);
+        if (replay != null) return replayIfSame(replay, requestHash);
         if (input.kind() == LedgerEntry.Kind.PAYMENT && balance(student.id).compareTo(input.amount()) < 0) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Payment exceeds unpaid balance.");
         }
@@ -145,6 +181,8 @@ public class Api {
         entry.amount = input.amount();
         entry.description = input.description().trim();
         entry.referenceNumber = reference;
+        entry.idempotencyKey = input.idempotencyKey();
+        entry.requestHash = requestHash;
         LedgerEntry saved = ledger.save(entry);
         audit.record(auth.getName(), "LEDGER_ENTRY_CREATED", "LedgerEntry", saved.id.toString(),
                 saved.kind + " amount=" + saved.amount + ";reference=" + saved.referenceNumber);
@@ -156,10 +194,20 @@ public class Api {
     @Transactional
     public LedgerEntry reverseLedger(@PathVariable Long id, @Valid @RequestBody ReasonInput input,
                                      Authentication auth) {
+        return createLedgerReversal(id, input, auth);
+    }
+
+    private LedgerEntry createLedgerReversal(Long id, ReasonInput input, Authentication auth) {
+        String requestHash = requestHash("ledger-reversal", auth.getName(), id.toString(), input.reason().trim());
+        LedgerEntry replay = ledger.findByIdempotencyKey(input.idempotencyKey()).orElse(null);
+        if (replay != null) return replayIfSame(replay, requestHash);
+
         LedgerEntry original = ledger.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Transaction not found."));
         students.findByIdForUpdate(original.student.id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Student not found."));
+        replay = ledger.findByIdempotencyKey(input.idempotencyKey()).orElse(null);
+        if (replay != null) return replayIfSame(replay, requestHash);
         if (original.description.startsWith(REVERSAL_PREFIX)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "A reversal cannot itself be reversed.");
         }
@@ -179,6 +227,8 @@ public class Api {
         reversal.amount = original.amount;
         reversal.description = marker + input.reason().trim();
         reversal.referenceNumber = "REV-" + UUID.randomUUID().toString().substring(0, 12).toUpperCase(Locale.ROOT);
+        reversal.idempotencyKey = input.idempotencyKey();
+        reversal.requestHash = requestHash;
         LedgerEntry saved = ledger.save(reversal);
         audit.record(auth.getName(), "LEDGER_ENTRY_REVERSED", "LedgerEntry", id.toString(),
                 "reversalId=" + saved.id + ";amount=" + saved.amount + ";reason=" + input.reason().trim());
@@ -193,18 +243,30 @@ public class Api {
     @PostMapping("/finance/funds")
     @ResponseStatus(HttpStatus.CREATED)
     @Transactional
-    public FundEntry addFund(@Valid @RequestBody FundEntry input, Authentication auth) {
-        input.id = null;
-        validateFund(input.type, input.amount, input.description);
+    public FundEntry addFund(@Valid @RequestBody FundInput input, Authentication auth) {
+        return createFund(input, auth);
+    }
+
+    private FundEntry createFund(FundInput input, Authentication auth) {
+        validateFund(input.type(), input.amount(), input.description());
         funds.acquireFundLedgerLock();
         funds.findAllForUpdate();
-        if (input.type == FundEntry.Type.DISBURSEMENT
-                && fundBalance().compareTo(input.amount) < 0) {
+        String requestHash = requestHash("fund", auth.getName(), input.type().name(), normalizedAmount(input.amount()),
+                input.description().trim());
+        FundEntry replay = funds.findByIdempotencyKey(input.idempotencyKey()).orElse(null);
+        if (replay != null) return replayIfSame(replay, requestHash);
+        if (input.type() == FundEntry.Type.DISBURSEMENT
+                && fundBalance().compareTo(input.amount()) < 0) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Insufficient fund balance.");
         }
-        input.description = input.description.trim();
-        input.createdAt = java.time.LocalDateTime.now();
-        FundEntry saved = funds.save(input);
+        FundEntry entry = new FundEntry();
+        entry.type = input.type();
+        entry.amount = input.amount();
+        entry.description = input.description().trim();
+        entry.createdAt = java.time.LocalDateTime.now();
+        entry.idempotencyKey = input.idempotencyKey();
+        entry.requestHash = requestHash;
+        FundEntry saved = funds.save(entry);
         audit.record(auth.getName(), "FUND_ENTRY_CREATED", "FundEntry", saved.id.toString(),
                 saved.type + " amount=" + saved.amount);
         return saved;
@@ -215,8 +277,15 @@ public class Api {
     @Transactional
     public FundEntry reverseFund(@PathVariable Long id, @Valid @RequestBody ReasonInput input,
                                  Authentication auth) {
+        return createFundReversal(id, input, auth);
+    }
+
+    private FundEntry createFundReversal(Long id, ReasonInput input, Authentication auth) {
         funds.acquireFundLedgerLock();
         funds.findAllForUpdate();
+        String requestHash = requestHash("fund-reversal", auth.getName(), id.toString(), input.reason().trim());
+        FundEntry replay = funds.findByIdempotencyKey(input.idempotencyKey()).orElse(null);
+        if (replay != null) return replayIfSame(replay, requestHash);
         FundEntry original = funds.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Fund entry not found."));
         if (original.description.startsWith(REVERSAL_PREFIX)) {
@@ -237,10 +306,50 @@ public class Api {
                 ? FundEntry.Type.ADDITION : FundEntry.Type.DISBURSEMENT;
         reversal.amount = original.amount;
         reversal.description = marker + input.reason().trim();
+        reversal.idempotencyKey = input.idempotencyKey();
+        reversal.requestHash = requestHash;
         FundEntry saved = funds.save(reversal);
         audit.record(auth.getName(), "FUND_ENTRY_REVERSED", "FundEntry", id.toString(),
                 "reversalId=" + saved.id + ";amount=" + saved.amount + ";reason=" + input.reason().trim());
         return saved;
+    }
+
+    private static String normalizedAmount(BigDecimal amount) {
+        return amount.stripTrailingZeros().toPlainString();
+    }
+
+    private static String normalizedReference(String referenceNumber) {
+        return referenceNumber == null || referenceNumber.isBlank() ? "" : referenceNumber.trim();
+    }
+
+    private static String requestHash(String... fields) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            for (String field : fields) {
+                byte[] bytes = field.getBytes(StandardCharsets.UTF_8);
+                digest.update(ByteBuffer.allocate(Integer.BYTES).putInt(bytes.length).array());
+                digest.update(bytes);
+            }
+            return HexFormat.of().formatHex(digest.digest());
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new IllegalStateException("SHA-256 is not available.", impossible);
+        }
+    }
+
+    private static LedgerEntry replayIfSame(LedgerEntry entry, String requestHash) {
+        if (!requestHash.equals(entry.requestHash)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Idempotency key was already used with different transaction details.");
+        }
+        return entry;
+    }
+
+    private static FundEntry replayIfSame(FundEntry entry, String requestHash) {
+        if (!requestHash.equals(entry.requestHash)) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT,
+                    "Idempotency key was already used with different transaction details.");
+        }
+        return entry;
     }
 
     private void validateFund(FundEntry.Type type, BigDecimal amount, String description) {
@@ -263,31 +372,47 @@ public class Api {
     }
 
     @GetMapping("/dashboard")
-    public Map<String, Object> dashboard() {
-        List<LedgerEntry> entries = ledger.findAllByOrderByCreatedAtDesc();
-        BigDecimal collections = netCollections(entries);
-        BigDecimal unpaid = students.findAll().stream()
-                .map(student -> balance(student.id).max(BigDecimal.ZERO))
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        List<DepartmentEvent> activeEvents = events.findByActiveTrue();
-        long activeEventCount = activeEvents.size();
-        Set<Long> activeEventIds = activeEvents.stream().map(event -> event.id).collect(Collectors.toSet());
-        long eligibleAttendance = attendance.count();
-        long presentOrLate = attendance.findAll().stream()
-                .filter(item -> activeEventIds.contains(item.event.id))
-                .filter(item -> item.status == Attendance.Status.PRESENT || item.status == Attendance.Status.LATE)
-                .count();
-        double attendanceRate = activeEventCount == 0 || students.count() == 0 ? 0
-                : (double) presentOrLate / ((double) activeEventCount * students.count()) * 100;
-        return Map.of(
-                "students", students.count(),
-                "collections", collections,
-                "unpaid", unpaid,
-                "fundBalance", fundBalance(),
-                "attendanceScans", eligibleAttendance,
-                "attendanceRate", Math.round(attendanceRate * 10.0) / 10.0,
-                "collectionChart", collectionChart(entries),
-                "recent", entries.stream().limit(5).toList());
+    public Map<String, Object> dashboard(Authentication auth) {
+        Set<String> roles = auth.getAuthorities().stream().map(Object::toString).collect(Collectors.toSet());
+        boolean financialAccess = roles.contains("ROLE_ADMIN") || roles.contains("ROLE_TREASURER");
+        boolean attendanceAccess = roles.contains("ROLE_ADMIN") || roles.contains("ROLE_OFFICER");
+        return dashboard(financialAccess, attendanceAccess);
+    }
+
+    Map<String, Object> dashboard() {
+        return dashboard(true, true);
+    }
+
+    private Map<String, Object> dashboard(boolean financialAccess, boolean attendanceAccess) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        long studentCount = students.count();
+        result.put("students", studentCount);
+        if (financialAccess) {
+            List<LedgerEntry> entries = ledger.findAllByOrderByCreatedAtDesc();
+            BigDecimal unpaid = students.findAll().stream()
+                    .map(student -> balance(student.id).max(BigDecimal.ZERO))
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            result.put("collections", netCollections(entries));
+            result.put("unpaid", unpaid);
+            result.put("fundBalance", fundBalance());
+            result.put("collectionChart", collectionChart(entries));
+            result.put("recent", entries.stream().limit(5).toList());
+        }
+        if (attendanceAccess) {
+            List<DepartmentEvent> activeEvents = events.findByActiveTrue();
+            long activeEventCount = activeEvents.size();
+            Set<Long> activeEventIds = activeEvents.stream().map(event -> event.id).collect(Collectors.toSet());
+            long eligibleAttendance = attendance.count();
+            long presentOrLate = attendance.findAll().stream()
+                    .filter(item -> activeEventIds.contains(item.event.id))
+                    .filter(item -> item.status == Attendance.Status.PRESENT || item.status == Attendance.Status.LATE)
+                    .count();
+            double attendanceRate = activeEventCount == 0 || studentCount == 0 ? 0
+                    : (double) presentOrLate / ((double) activeEventCount * studentCount) * 100;
+            result.put("attendanceScans", eligibleAttendance);
+            result.put("attendanceRate", Math.round(attendanceRate * 10.0) / 10.0);
+        }
+        return result;
     }
 
     private BigDecimal netCollections(List<LedgerEntry> entries) {
@@ -409,8 +534,8 @@ public class Api {
     }
 
     @GetMapping("/reports/summary")
-    public Map<String, Object> report() {
-        return dashboard();
+    public Map<String, Object> report(Authentication auth) {
+        return dashboard(auth);
     }
 
     @GetMapping("/reports/students")

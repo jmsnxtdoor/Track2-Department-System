@@ -2,7 +2,7 @@
 
 Track 2 is a department management system with a Spring Boot REST API, a Vue/Vuetify administrative web app, a PostgreSQL database, and a Flutter student portal. It supports student records, fines and payments, department funds and expenses, attendance, reports, user roles, student-account linking, and audit logs.
 
-This is an academic development project, not a production-hardened financial system. The backend remains loopback-only by default; optional private-LAN binding is guarded by the startup helper, and no firewall rules or production deployment are configured.
+This is an academic development project, not a production-hardened financial system. The backend is loopback-only; the startup helper rejects non-loopback binds, and no firewall rules or production deployment are configured.
 
 ## Technology stack
 
@@ -18,7 +18,7 @@ This is an academic development project, not a production-hardened financial sys
 ## Features
 
 - Role-based sign-in for Administrator, Treasurer, Officer, and Student accounts.
-- Dashboard with payment, fund, unpaid-balance, and attendance summaries.
+- Role-filtered dashboard with authorized finance or attendance summaries.
 - Student records and student fines.
 - Payment records, partial payments, balance checks, and append-only correcting entries.
 - Department fund additions and expenses with balance checks.
@@ -123,15 +123,7 @@ The REST API already exposes student, attendance, finance, and report endpoints.
 
 Administrators can use the web app's **External API** page to make a one-time, read-only GET request to an HTTPS endpoint that returns JSON. Requests are made directly by the browser, so the external API must allow the web app's origin through CORS. An optional Bearer token is sent only to that endpoint, is cleared after the request, and is not saved. This does not import, store, or synchronize the external dataset; mapping or syncing requires that system's API documentation.
 
-To let another computer on a trusted private LAN reach the API, first set that Windows network profile to **Private**, then start the backend bound to this computer's private IPv4 address:
-
-```powershell
-.\scripts\start-backend.ps1 -ServerAddress 192.168.1.25
-```
-
-Replace the example address with the backend computer's actual private IPv4 address. The helper rejects non-private or unassigned addresses and refuses LAN binding unless Windows classifies that adapter's network as Private. The database remains bound to loopback. LAN clients can use `http://<server-private-ip>:8080/swagger-ui.html` and `http://<server-private-ip>:8080/v3/api-docs`; browser-based clients must also be added as an exact origin in `CORS_ORIGIN`.
-
-No Windows Firewall rule is created. Remote access will work only if the host firewall and network permit it; configure any firewall exception separately and restrict it to the trusted private network. The API uses HTTP Basic authentication, which does not encrypt credentials or data in transit. Do not send real student or financial data over an untrusted network; use HTTPS before production or broader deployment.
+For HTTPS LAN testing, expose only the Vue/Vite HTTPS server to the trusted network. Its `/api` proxy forwards to `http://127.0.0.1:8080`; Spring Boot and PostgreSQL stay bound to loopback. Do not pass a LAN address to `-ServerAddress`. No Windows Firewall or certificate trust changes are made by the startup helper.
 
 ## Vue administrative app setup
 
@@ -169,7 +161,7 @@ For an Android emulator with the local backend running:
 flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8080/api
 ```
 
-For Flutter Web on the same computer, set `API_BASE_URL` to the local backend URL and configure `CORS_ORIGIN` to the exact browser origin Flutter Web uses. The backend's default CORS origin is only `http://localhost:5173`, which is the Vue development server.
+For Flutter Web on the same computer, set `API_BASE_URL` to the local backend URL and configure an exact CORS origin suitable for that client. The Vue HTTPS development setup uses its same-origin `/api` proxy and does not send browser requests directly to Spring Boot.
 
 The Android SDK path is configured in the untracked `mobile/android/local.properties`; it is machine-specific and is not submitted.
 
@@ -213,9 +205,9 @@ Use the emulator URL `http://10.0.2.2:8080/api` only for local emulator testing.
 
 ### Computer and phone connectivity
 
-LAN access is intentionally not enabled by the development configuration. The backend is started on loopback by the workspace helper, PostgreSQL must remain loopback-only, and the development CORS origin is limited to the configured Vue origin. A physical phone or another computer cannot use `127.0.0.1` on the development computer as its API host.
+The Vue HTTPS development server can serve the UI to a trusted LAN client; its `/api` proxy reaches Spring Boot over loopback. The startup helper and application default keep Spring Boot bound to `127.0.0.1`, and PostgreSQL remains loopback-only. Do not access the backend directly from another device.
 
-For an approved LAN demonstration or deployment, first provide an HTTPS endpoint (for example, through an approved TLS reverse proxy), then configure the backend to bind only as required, allow only the exact Vue browser origin in `CORS_ORIGIN`, and permit only the required HTTPS/API traffic through the host firewall. Point Flutter at `https://<approved-api-host>/api` with `--dart-define=API_BASE_URL=...`. Android native HTTP requests do not use browser CORS, but still require network routing and valid TLS. Do not expose PostgreSQL port 55432, use wildcard CORS, or send Basic credentials over plain HTTP. This repository does not include TLS certificates, a production reverse proxy, firewall rules, or public deployment configuration.
+External clients such as Flutter must use a separately approved HTTPS API endpoint; the local development backend is not directly reachable from other devices. Android native HTTP requests do not use browser CORS, but still require network routing and valid TLS. Do not expose PostgreSQL port 55432, use wildcard CORS, or send Basic credentials over plain HTTP. This repository does not include a production reverse proxy, firewall rules, or public deployment configuration.
 
 ## OpenAPI and Swagger
 
@@ -244,6 +236,8 @@ The REST API base path is `/api`. Useful route groups include:
 
 Requests and responses use JSON. Authentication is HTTP Basic, and the backend enforces role permissions and student ownership. Do not embed credentials in a client, source file, QR code, or URL. Use HTTPS before sending credentials or accessing protected data across computers. LAN access is not currently enabled: the API and PostgreSQL are loopback-bound. Do not expose PostgreSQL.
 
+Financial write requests require an `idempotencyKey` UUID in the JSON body for fines, payments, fund entries, expenses, and corrections. Retry an uncertain submission with the same key and unchanged details; start a separate transaction with a new key. The Vue app retains pending keys in browser storage, scoped to the signed-in username, until the request succeeds. Before deploying the backend change, apply `backend/migrations/20261104_financial_idempotency.sql` to the intended database; the migration is not run automatically, and the active database was not changed during implementation.
+
 The Vue app uses the same-origin `/api` path through its development proxy. The Flutter app accepts an API base URL at build/run time with `--dart-define=API_BASE_URL=...` or on its sign-in screen. Android emulator `10.0.2.2` refers to the development computer; it is not the correct address for a physical device or another computer. LAN sharing requires separately approved network binding, firewall, CORS, and HTTPS configuration.
 
 ### Roles
@@ -251,11 +245,23 @@ The Vue app uses the same-origin `/api` path through its development proxy. The 
 | Role | Access |
 | --- | --- |
 | Administrator | Dashboard, students, finance, funds/expenses, attendance, reports, user accounts, student links, and audit logs |
-| Treasurer | Dashboard, read-only student records, finance, funds/expenses, and reports |
-| Officer | Dashboard, read-only student records, attendance, and reports |
+| Treasurer | Read-only student records; manage fines, payments, funds, and expenses; financial dashboard metrics and finance/fund reports only |
+| Officer | Read-only student records; manage attendance activities and records; attendance dashboard metrics and attendance reports only; no student ledger/balance access |
 | Student | Own linked student summary, balance/ledger, and attendance only |
 
+Treasurers and Officers cannot access user management. Dashboard responses and report routes are filtered by role: the Treasurer does not receive attendance metrics/reports, and the Officer does not receive financial metrics, finance/fund reports, or another student's ledger/balance. Students use only linked-record `/api/students/me/**` endpoints and cannot access staff dashboards or reports. Administrator access includes all current modules; no hard-delete endpoints are implemented.
+
 An unlinked Student account receives a setup response for student-only data until an administrator links it to an existing student record. The current local development database contains one fictional DEMO student linked to the development Student account. This record is local database data, is not seeded by the application, and is not included in a fresh source checkout.
+
+### Local HTTPS CORS configuration
+
+The backend startup script reads `backend/.env.cors.local`, which is ignored by Git. Create it with a comma-separated exact-origin allowlist, for example:
+
+```text
+CORS_ORIGIN=https://127.0.0.1:5173,https://<current-private-LAN-IPv4>:5173
+```
+
+Replace the placeholder with the laptop's current private IPv4 address. If that address changes, update this local file; do not add the machine-specific address to application source. The startup script accepts only HTTPS IPv4 origins on port 5173 that are either `127.0.0.1` or RFC1918 private addresses. It rejects wildcard and non-private origins. Run `.\scripts\start-backend.ps1` without `-ServerAddress` to keep Spring Boot bound to loopback; the Vite proxy forwards `/api` requests to that local backend. PostgreSQL remains on loopback.
 
 ### Rotating the development Student password
 
@@ -314,11 +320,11 @@ Latest Phase 5 verification: 39 Maven tests passed (including 6 PostgreSQL integ
 
 ## Limitations and remaining integration work
 
-- LAN sharing is paused and not complete. The API currently listens on loopback; no LAN firewall rule or HTTPS endpoint is configured.
+- The Vite HTTPS development proxy is configured for local LAN testing, but this task does not change firewall rules or certificate trust settings on another laptop.
 - The current local development database may contain the fictional DEMO student; a fresh database/source checkout has no demonstration student records. Do not submit the local database or its backups.
 - Financial, fund, attendance, reporting, and student portal workflows have passed automated disposable-PostgreSQL and browser tests as described in the runtime report. These results do not replace deployment or device certification.
 - Physical Android execution and camera-based QR scanning have not been tested. Automated QR payload/API tests do not certify camera capture.
-- Browser API calls are restricted to the configured CORS origin. The verified development origin is `http://localhost:5173`; another host or port requires a deliberate, exact-origin configuration.
+- Browser API calls are restricted to the exact HTTPS origins in the ignored local CORS configuration. Other hosts or ports require a deliberate configuration update.
 - The student QR contains a student ID for lookup; it is not an authentication credential or proof of attendance.
 - HTTP Basic is suitable only for controlled local development. Do not use it over plain HTTP on a LAN or the Internet.
 - The project is not production hardened or deployed. Android debug APK generation passed, but the Android release build currently uses debug signing; no production TLS setup, reverse proxy, LAN firewall rules, or deployment automation is configured.

@@ -61,9 +61,12 @@ class ReportsDashboardPostgresIntegrationTest {
                 new BigDecimal("40.00"), "Report partial payment", "RPT-PAY-" + UUID.randomUUID()), TREASURER);
 
         FundEntry income = fund(FundEntry.Type.OPENING_BALANCE, "1000.00");
-        api.addFund(income, TREASURER);
-        api.addFund(fund(FundEntry.Type.DISBURSEMENT, "250.00"), TREASURER);
-        FundEntry expense = api.addFund(fund(FundEntry.Type.DISBURSEMENT, "150.00"), TREASURER);
+        api.addFund(new Api.FundInput(income.type, income.amount, income.description), TREASURER);
+        FundEntry firstExpense = fund(FundEntry.Type.DISBURSEMENT, "250.00");
+        api.addFund(new Api.FundInput(firstExpense.type, firstExpense.amount, firstExpense.description), TREASURER);
+        FundEntry expenseInput = fund(FundEntry.Type.DISBURSEMENT, "150.00");
+        FundEntry expense = api.addFund(
+                new Api.FundInput(expenseInput.type, expenseInput.amount, expenseInput.description), TREASURER);
 
         DepartmentEvent newEvent = new DepartmentEvent();
         newEvent.title = "Fictional report event";
