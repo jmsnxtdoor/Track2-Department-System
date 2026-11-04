@@ -2,7 +2,7 @@
 
 Track 2 is a department management system with a Spring Boot REST API, a Vue/Vuetify administrative web app, a PostgreSQL database, and a Flutter student portal. It supports student records, fines and payments, department funds and expenses, attendance, reports, user roles, student-account linking, and audit logs.
 
-This is an academic development project, not a production-hardened financial system. LAN sharing and production deployment are not configured.
+This is an academic development project, not a production-hardened financial system. The backend remains loopback-only by default; optional private-LAN binding is guarded by the startup helper, and no firewall rules or production deployment are configured.
 
 ## Technology stack
 
@@ -94,7 +94,7 @@ The workspace helper [scripts/start-backend.ps1](scripts/start-backend.ps1) chec
 .\scripts\start-backend.ps1
 ```
 
-That helper expects the workspace JDK at `tools/jdk-21`, Maven at `C:\Maven\apache-maven-3.9.9\bin\mvn.cmd`, PostgreSQL client tools under `C:\Program Files\PostgreSQL\18\bin`, and the two local `.env` files described above. These paths are specific to this workstation.
+The helper prefers the workspace JDK at `tools/jdk-21`, Maven at `C:\Maven\apache-maven-3.9.9\bin\mvn.cmd`, and PostgreSQL client tools under `C:\Program Files\PostgreSQL\18\bin`. If those are absent, it checks `JAVA_HOME`/`PATH` for Java and Maven and uses the newest PostgreSQL client under `C:\Program Files\PostgreSQL`. The two local `.env` files described above are still required.
 
 For a different workstation, configure the same environment variables in the current terminal process and run Maven from `backend/`:
 
@@ -115,7 +115,23 @@ mvn spring-boot:run
 
 Keep secrets private and avoid pasting real values into shell history, chat, logs, or documentation. The development seeder creates only the four role accounts when absent; it does not create student or financial records.
 
-The API listens on `127.0.0.1:8080` in the Track 2 startup script. Health check: <http://127.0.0.1:8080/api/health>.
+The API listens on `127.0.0.1:8080` by default. Health check: <http://127.0.0.1:8080/api/health>.
+
+### Optional private-LAN API access
+
+The REST API already exposes student, attendance, finance, and report endpoints. Swagger UI is at `/swagger-ui.html`, and the OpenAPI JSON is at `/v3/api-docs`. API endpoints use HTTP Basic authentication and the application's role-based permissions; use an account with only the permissions the integration needs.
+
+Administrators can use the web app's **External API** page to make a one-time, read-only GET request to an HTTPS endpoint that returns JSON. Requests are made directly by the browser, so the external API must allow the web app's origin through CORS. An optional Bearer token is sent only to that endpoint, is cleared after the request, and is not saved. This does not import, store, or synchronize the external dataset; mapping or syncing requires that system's API documentation.
+
+To let another computer on a trusted private LAN reach the API, first set that Windows network profile to **Private**, then start the backend bound to this computer's private IPv4 address:
+
+```powershell
+.\scripts\start-backend.ps1 -ServerAddress 192.168.1.25
+```
+
+Replace the example address with the backend computer's actual private IPv4 address. The helper rejects non-private or unassigned addresses and refuses LAN binding unless Windows classifies that adapter's network as Private. The database remains bound to loopback. LAN clients can use `http://<server-private-ip>:8080/swagger-ui.html` and `http://<server-private-ip>:8080/v3/api-docs`; browser-based clients must also be added as an exact origin in `CORS_ORIGIN`.
+
+No Windows Firewall rule is created. Remote access will work only if the host firewall and network permit it; configure any firewall exception separately and restrict it to the trusted private network. The API uses HTTP Basic authentication, which does not encrypt credentials or data in transit. Do not send real student or financial data over an untrusted network; use HTTPS before production or broader deployment.
 
 ## Vue administrative app setup
 

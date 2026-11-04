@@ -1,4 +1,37 @@
+param(
+    [string]$ServerAddress = '127.0.0.1'
+)
+
 $ErrorActionPreference = 'Stop'
+
+$parsedServerAddress = $null
+
+if (-not [System.Net.IPAddress]::TryParse($ServerAddress, [ref]$parsedServerAddress) -or
+    $parsedServerAddress.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) {
+    throw 'ServerAddress must be an IPv4 address assigned to this computer.'
+}
+
+if ($ServerAddress -ne '127.0.0.1') {
+    $addressBytes = $parsedServerAddress.GetAddressBytes()
+    $isPrivateAddress = $addressBytes[0] -eq 10 -or
+        ($addressBytes[0] -eq 172 -and $addressBytes[1] -ge 16 -and $addressBytes[1] -le 31) -or
+        ($addressBytes[0] -eq 192 -and $addressBytes[1] -eq 168)
+    if (-not $isPrivateAddress) {
+        throw 'LAN binding requires a private RFC 1918 IPv4 address.'
+    }
+
+    $localAddress = Get-NetIPAddress -AddressFamily IPv4 -IPAddress $ServerAddress -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -eq $localAddress) {
+        throw 'LAN binding requires an IPv4 address assigned to this computer.'
+    }
+
+    $connectionProfile = Get-NetConnectionProfile -InterfaceIndex $localAddress.InterfaceIndex -ErrorAction SilentlyContinue |
+        Select-Object -First 1
+    if ($null -eq $connectionProfile -or $connectionProfile.NetworkCategory -ne 'Private') {
+        throw 'LAN binding is allowed only on a Windows network profile classified as Private.'
+    }
+}
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $backendDirectory = Join-Path $projectRoot 'backend'
@@ -9,6 +42,39 @@ $maven = 'C:\Maven\apache-maven-3.9.9\bin\mvn.cmd'
 $mavenRepository = Join-Path $projectRoot 'tools\maven-repo'
 $psql = 'C:\Program Files\PostgreSQL\18\bin\psql.exe'
 $expectedDatabaseUrl = 'jdbc:postgresql://127.0.0.1:55432/track2_department'
+
+if (-not (Test-Path -LiteralPath (Join-Path $javaHome 'bin\java.exe') -PathType Leaf)) {
+    if ($env:JAVA_HOME -and (Test-Path -LiteralPath (Join-Path $env:JAVA_HOME 'bin\java.exe') -PathType Leaf)) {
+        $javaHome = $env:JAVA_HOME
+    }
+    else {
+        $javaCommand = Get-Command java.exe -ErrorAction SilentlyContinue
+        if ($null -ne $javaCommand) {
+            $javaHome = Split-Path -Parent (Split-Path -Parent $javaCommand.Source)
+        }
+    }
+}
+
+if (-not (Test-Path -LiteralPath $maven -PathType Leaf)) {
+    $mavenCommand = Get-Command mvn.cmd -ErrorAction SilentlyContinue
+    if ($null -ne $mavenCommand) {
+        $maven = $mavenCommand.Source
+    }
+}
+
+if (-not (Test-Path -LiteralPath $psql -PathType Leaf)) {
+    $postgresInstallations = 'C:\Program Files\PostgreSQL'
+    if (Test-Path -LiteralPath $postgresInstallations -PathType Container) {
+        $psqlCandidates = Get-ChildItem -LiteralPath $postgresInstallations -Directory |
+            Sort-Object { [int]$_.Name } -Descending |
+            ForEach-Object { Join-Path $_.FullName 'bin\psql.exe' }
+        $availablePsql = $psqlCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+            Select-Object -First 1
+        if ($availablePsql) {
+            $psql = $availablePsql
+        }
+    }
+}
 
 function Read-EnvFile([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
@@ -120,7 +186,7 @@ $env:TREASURER_PASSWORD = $accountSettings['TREASURER_PASSWORD']
 $env:OFFICER_PASSWORD = $accountSettings['OFFICER_PASSWORD']
 $env:STUDENT_PASSWORD = $accountSettings['STUDENT_PASSWORD']
 $env:SPRING_PROFILES_ACTIVE = 'dev'
-$env:SERVER_ADDRESS = '127.0.0.1'
+$env:SERVER_ADDRESS = $ServerAddress
 $env:PORT = '8080'
 
 if (-not (Test-Path -LiteralPath $mavenRepository -PathType Container)) {
@@ -128,7 +194,7 @@ if (-not (Test-Path -LiteralPath $mavenRepository -PathType Container)) {
 }
 
 Write-Output 'Verified database: track2_app at 127.0.0.1:55432/track2_department.'
-Write-Output 'Starting Spring Boot with the dev profile on 127.0.0.1:8080.'
+Write-Output "Starting Spring Boot with the dev profile on ${ServerAddress}:8080."
 Set-Location -LiteralPath $backendDirectory
 & $maven --batch-mode --no-transfer-progress `
     "-Dmaven.repo.local=$mavenRepository" `

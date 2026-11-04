@@ -59,6 +59,18 @@ textarea {
   color: var(--text-secondary);
 }
 
+.external-api-json {
+  max-height: 65vh;
+  overflow: auto;
+  padding: 16px;
+  border-radius: 8px;
+  background: #f1f5f9;
+  color: var(--text-primary);
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .app-drawer {
   border-right: 1px solid var(--line) !important;
   background: var(--surface);

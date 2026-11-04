@@ -4,6 +4,7 @@ import axios from 'axios';
 import { useDisplay } from 'vuetify';
 import { setRequestFailure } from './requestState.js';
 import { saveUserAccount } from './userAccounts.js';
+import { fetchExternalJson } from './externalApi.js';
 
 const api = axios.create({ baseURL: import.meta.env.VITE_API_URL || '/api' });
 const { mdAndUp } = useDisplay();
@@ -42,6 +43,11 @@ const qrScanner = ref(null);
 const userDialog = ref(false);
 const editingUser = ref(null);
 const userForm = ref({ username: '', role: 'STUDENT', password: '', newPassword: '', enabled: true, studentId: null });
+const externalApiUrl = ref('');
+const externalApiToken = ref('');
+const externalApiResult = ref(null);
+const externalApiError = ref('');
+const externalApiLoading = ref(false);
 const reverseDialog = ref(false);
 const reverseTarget = ref(null);
 const reverseType = ref('');
@@ -72,6 +78,7 @@ const navigationIcons = {
   Attendance: 'mdi-calendar-check-outline',
   Reports: 'mdi-chart-box-outline',
   'Users & Roles': 'mdi-account-cog-outline',
+  'External API': 'mdi-api',
   'Audit Logs': 'mdi-text-box-search-outline',
   'My Account': 'mdi-account-outline',
 };
@@ -121,7 +128,7 @@ const auditEntityLabel = entityType => ({
 })[entityType] || displayCode(entityType);
 
 const menu = computed(() => role.value === 'ADMIN'
-  ? ['Dashboard', 'Students', 'Fines', 'Collections', 'Collectibles', 'Funds', 'Disbursements', 'Attendance', 'Reports', 'Users & Roles', 'Audit Logs']
+  ? ['Dashboard', 'Students', 'Fines', 'Collections', 'Collectibles', 'Funds', 'Disbursements', 'Attendance', 'Reports', 'External API', 'Users & Roles', 'Audit Logs']
   : role.value === 'TREASURER'
     ? ['Dashboard', 'Students', 'Fines', 'Collections', 'Collectibles', 'Funds', 'Disbursements', 'Reports']
     : role.value === 'OFFICER'
@@ -312,6 +319,9 @@ async function logout() {
   records.value = [];
   users.value = [];
   auditLogs.value = [];
+  externalApiToken.value = '';
+  externalApiResult.value = null;
+  externalApiError.value = '';
 }
 
 async function refresh() {
@@ -342,6 +352,21 @@ async function refresh() {
     }
   } catch {
     // The request helper has already surfaced the error in the page alert.
+  }
+}
+
+async function loadExternalApi() {
+  externalApiLoading.value = true;
+  externalApiError.value = '';
+  externalApiResult.value = null;
+  const bearerToken = externalApiToken.value;
+  externalApiToken.value = '';
+  try {
+    externalApiResult.value = await fetchExternalJson(externalApiUrl.value, bearerToken);
+  } catch (failure) {
+    externalApiError.value = failure.message || 'The external API request failed.';
+  } finally {
+    externalApiLoading.value = false;
   }
 }
 
@@ -941,6 +966,49 @@ onBeforeUnmount(() => {
                   </template>
                 </v-table>
               </div>
+            </v-card>
+          </template>
+
+          <template v-else-if="page === 'External API' && role === 'ADMIN'">
+            <v-card class="pa-5 mb-4">
+              <h3>Read data from another system</h3>
+              <p class="muted mt-2">
+                Enter a public HTTPS endpoint that returns JSON. This sends a read-only GET request
+                from this browser; the other API must allow this site's origin through CORS.
+              </p>
+              <v-alert type="info" variant="tonal" class="my-4">
+                This first version only reads JSON and does not import, save, sync, or change records.
+                Do not enter credentials in the URL. Only use a bearer token with a system you trust;
+                the token is sent directly to that API and is not saved.
+              </v-alert>
+              <v-form @submit.prevent="loadExternalApi">
+                <v-text-field
+                  v-model="externalApiUrl"
+                  label="HTTPS API URL"
+                  placeholder="https://api.example.com/v1/students"
+                  type="url"
+                  autocomplete="url"
+                  required
+                  variant="outlined"
+                />
+                <v-text-field
+                  v-model="externalApiToken"
+                  label="Bearer token (optional)"
+                  type="password"
+                  autocomplete="new-password"
+                  variant="outlined"
+                />
+                <v-btn type="submit" color="primary" :loading="externalApiLoading" :disabled="externalApiLoading">
+                  Get JSON data
+                </v-btn>
+              </v-form>
+            </v-card>
+            <v-alert v-if="externalApiError" type="error" class="mb-4">
+              {{ externalApiError }}
+            </v-alert>
+            <v-card v-if="externalApiResult !== null" class="pa-5">
+              <h3 class="mb-3">API response</h3>
+              <pre class="external-api-json">{{ JSON.stringify(externalApiResult, null, 2) }}</pre>
             </v-card>
           </template>
 
