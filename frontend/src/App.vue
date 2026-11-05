@@ -4,7 +4,7 @@ import axios from 'axios';
 import { useDisplay } from 'vuetify';
 import { setRequestFailure } from './requestState.js';
 import { saveUserAccount } from './userAccounts.js';
-import { fetchExternalJson } from './externalApi.js';
+import { buildExternalApiRequest } from './externalApi.js';
 import { clearIdempotencyKey, getIdempotencyKey } from './idempotency.js';
 
 const api = axios.create({ baseURL: import.meta.env.VITE_API_URL || '/api' });
@@ -46,8 +46,10 @@ const userDialog = ref(false);
 const editingUser = ref(null);
 const userForm = ref({ username: '', role: 'STUDENT', password: '', newPassword: '', enabled: true, studentId: null });
 const externalApiUrl = ref('');
-const externalApiToken = ref('');
+const externalApiAuthenticationType = ref('NONE');
+const externalApiCredential = ref('');
 const externalApiResult = ref(null);
+const externalApiStatus = ref(null);
 const externalApiError = ref('');
 const externalApiLoading = ref(false);
 const reverseDialog = ref(false);
@@ -351,8 +353,9 @@ async function logout() {
   stats.value = {};
   studentPortal.value = { summary: null, ledger: [], attendance: [] };
   reportData.value = { students: [], finance: null, funds: [], attendance: [] };
-  externalApiToken.value = '';
+  externalApiCredential.value = '';
   externalApiResult.value = null;
+  externalApiStatus.value = null;
   externalApiError.value = '';
 }
 
@@ -402,12 +405,22 @@ async function loadExternalApi() {
   externalApiLoading.value = true;
   externalApiError.value = '';
   externalApiResult.value = null;
-  const bearerToken = externalApiToken.value;
-  externalApiToken.value = '';
+  externalApiStatus.value = null;
+  const credential = externalApiCredential.value;
+  externalApiCredential.value = '';
   try {
-    externalApiResult.value = await fetchExternalJson(externalApiUrl.value, bearerToken);
+    const requestBody = buildExternalApiRequest(
+      externalApiUrl.value,
+      externalApiAuthenticationType.value,
+      credential,
+    );
+    const response = await request('post', '/admin/external-api/fetch', requestBody);
+    externalApiStatus.value = response.status;
+    externalApiResult.value = response.data;
   } catch (failure) {
-    externalApiError.value = failure.message || 'The external API request failed.';
+    externalApiError.value = failure.response?.data?.detail
+      || failure.message
+      || 'The external API request failed.';
   } finally {
     externalApiLoading.value = false;
   }
@@ -1035,27 +1048,40 @@ onBeforeUnmount(() => {
             <v-card class="pa-5 mb-4">
               <h3>Read data from another system</h3>
               <p class="muted mt-2">
-                Enter a public HTTPS endpoint that returns JSON. This sends a read-only GET request
-                from this browser; the other API must allow this site's origin through CORS.
+                Track 2 makes a read-only GET request through its backend to a configured trusted endpoint.
+                Remote endpoints must use HTTPS. The local demonstration endpoint is loopback-only.
               </p>
               <v-alert type="info" variant="tonal" class="my-4">
-                This first version only reads JSON and does not import, save, sync, or change records.
-                Do not enter credentials in the URL. Only use a bearer token with a system you trust;
-                the token is sent directly to that API and is not saved.
+                Requests are not imported, saved, synchronized, or used to change records.
+                The credential is sent to Track 2 for this request, then forwarded to the configured endpoint.
+                It is not saved.
               </v-alert>
               <v-form @submit.prevent="loadExternalApi">
                 <v-text-field
                   v-model="externalApiUrl"
-                  label="HTTPS API URL"
-                  placeholder="https://api.example.com/v1/students"
+                  label="External API URL"
+                  placeholder="https://trusted-api.example/v1/summary"
                   type="url"
                   autocomplete="url"
                   required
                   variant="outlined"
+                  hint="Use an approved HTTPS endpoint. HTTP is allowed only for the local 127.0.0.1 demo."
+                  persistent-hint
+                />
+                <v-select
+                  v-model="externalApiAuthenticationType"
+                  :items="[
+                    { title: 'No authentication', value: 'NONE' },
+                    { title: 'X-API-Key', value: 'API_KEY' },
+                    { title: 'Bearer token', value: 'BEARER' },
+                  ]"
+                  label="Authentication"
+                  variant="outlined"
                 />
                 <v-text-field
-                  v-model="externalApiToken"
-                  label="Bearer token (optional)"
+                  v-if="externalApiAuthenticationType !== 'NONE'"
+                  v-model="externalApiCredential"
+                  :label="externalApiAuthenticationType === 'API_KEY' ? 'External API key' : 'Bearer token'"
                   type="password"
                   autocomplete="new-password"
                   variant="outlined"
@@ -1069,7 +1095,14 @@ onBeforeUnmount(() => {
               {{ externalApiError }}
             </v-alert>
             <v-card v-if="externalApiResult !== null" class="pa-5">
-              <h3 class="mb-3">API response</h3>
+              <h3 class="mb-3">External API response (upstream HTTP {{ externalApiStatus }})</h3>
+              <v-alert
+                :type="externalApiStatus >= 200 && externalApiStatus < 300 ? 'success' : 'error'"
+                variant="tonal"
+                class="mb-4"
+              >
+                The external endpoint returned HTTP {{ externalApiStatus }}.
+              </v-alert>
               <pre class="external-api-json">{{ JSON.stringify(externalApiResult, null, 2) }}</pre>
             </v-card>
           </template>

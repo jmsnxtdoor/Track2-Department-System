@@ -32,7 +32,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@WebMvcTest(controllers = {Api.class, UserAdminController.class, AuditAdminController.class}, properties = {
+@WebMvcTest(controllers = {
+        Api.class, UserAdminController.class, AuditAdminController.class, ExternalApiController.class
+}, properties = {
         "app.cors.origin=https://127.0.0.1:5173,https://192.168.0.106:5173"
 })
 @Import(SecurityConfig.class)
@@ -67,6 +69,9 @@ class AdminAuthorizationTest {
     @MockBean
     private StudentPortalService studentPortalService;
 
+    @MockBean
+    private ExternalApiService externalApiService;
+
     @Test
     void rejectsWildcardCorsOrigins() {
         assertThrows(IllegalArgumentException.class, () -> SecurityConfig.corsOrigins("*"));
@@ -86,6 +91,12 @@ class AdminAuthorizationTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"title\":\"Test activity\",\"eventDate\":\"2026-01-02\",\"active\":true}"))
                 .andExpect(status().isUnauthorized());
+
+        mvc.perform(post("/api/admin/external-api/fetch")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"url\":\"https://trusted.example.test/summary\","
+                                + "\"authenticationType\":\"NONE\",\"credential\":\"\"}"))
+                .andExpect(status().isUnauthorized());
     }
 
     @Test
@@ -96,6 +107,16 @@ class AdminAuthorizationTest {
 
         mvc.perform(get("/api/admin/users")).andExpect(status().isOk());
         mvc.perform(get("/api/admin/audit-logs")).andExpect(status().isOk());
+        when(externalApiService.fetch("https://trusted.example.test/summary",
+                ExternalApiController.AuthenticationType.NONE, ""))
+                .thenReturn(new ExternalApiService.ExternalApiResult(200,
+                        new com.fasterxml.jackson.databind.ObjectMapper().readTree("{\"source\":\"demo\"}")));
+        mvc.perform(post("/api/admin/external-api/fetch")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"url\":\"https://trusted.example.test/summary\","
+                                + "\"authenticationType\":\"NONE\",\"credential\":\"\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value(200));
     }
 
     @Test
@@ -136,6 +157,11 @@ class AdminAuthorizationTest {
         mvc.perform(put("/api/admin/users/1/student-link")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"studentId\":1}"))
+                .andExpect(status().isForbidden());
+        mvc.perform(post("/api/admin/external-api/fetch")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"url\":\"https://trusted.example.test/summary\","
+                                + "\"authenticationType\":\"NONE\",\"credential\":\"\"}"))
                 .andExpect(status().isForbidden());
     }
 

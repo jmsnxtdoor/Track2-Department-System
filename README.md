@@ -233,10 +233,30 @@ The REST API base path is `/api`. Useful route groups include:
 | User accounts and student links | `/api/admin/users/**` |
 | Audit log | `GET /api/admin/audit-logs` |
 | Authenticated student's own data | `/api/students/me/**` |
+| Shared system integration summary | `GET /api/integration/v1/summary` |
+| Administrator external API proxy | `POST /api/admin/external-api/fetch` |
 
 Requests and responses use JSON. Authentication is HTTP Basic, and the backend enforces role permissions and student ownership. Do not embed credentials in a client, source file, QR code, or URL. Use HTTPS before sending credentials or accessing protected data across computers. LAN access is not currently enabled: the API and PostgreSQL are loopback-bound. Do not expose PostgreSQL.
 
-Financial write requests require an `idempotencyKey` UUID in the JSON body for fines, payments, fund entries, expenses, and corrections. Retry an uncertain submission with the same key and unchanged details; start a separate transaction with a new key. The Vue app retains pending keys in browser storage, scoped to the signed-in username, until the request succeeds. Before deploying the backend change, apply `backend/migrations/20261104_financial_idempotency.sql` to the intended database; the migration is not run automatically, and the active database was not changed during implementation.
+### Shared API-key demonstration
+
+The provider endpoint is separate from application login and requires `X-API-Key`, configured locally with `TRACK2_INTEGRATION_API_KEY`. It returns only a non-personal service summary. The Administrator External API page sends GET requests through Spring Boot; it supports `X-API-Key` and Bearer authentication, exact endpoint allowlisting, HTTPS for remote systems, a 10-second request timeout, and a 1 MB JSON response limit. Add approved remote HTTPS endpoints to the comma-separated `EXTERNAL_API_ALLOWED_ENDPOINTS` setting in the ignored `backend/.env.integration.local`. Do not put credentials in URLs.
+
+Run the local loopback-only demonstration from the project root:
+
+```powershell
+.\scripts\start-api-integration-demo.ps1
+.\scripts\start-backend.ps1
+.\scripts\test-api-integration-demo.ps1
+```
+
+The first command generates independent cryptographically secure demo keys into the Git-ignored `backend/.env.integration.local`; it does not display or copy keys. It starts the mock at `http://127.0.0.1:8091`; its JSON is labeled `DEMONSTRATION_ONLY` and is not real integrated data. The backend launcher loads the Track 2 shared key and exact loopback endpoint allowlist from that local file. If Spring Boot is already running, restart only Spring Boot after setting up the demo configuration. Do not expose the mock or database to the LAN.
+
+To copy the mock key only when needed, run `.\scripts\manage-api-integration-keys.ps1 -Mode CopyExternalKey`; the value is sent to the clipboard and is never printed. In the Admin UI, open **External API**, enter `http://127.0.0.1:8091/v1/demo`, select **X-API-Key**, paste the key, and select **Get JSON data**. The response labels the upstream HTTP status separately from errors returned by the Track 2 backend. The test script checks correct, incorrect, and missing keys against both systems and confirms the mock can retrieve Track 2's non-personal summary. It does not create or modify application records.
+
+The two demonstration keys were exposed and must be rotated. Prepare a replacement pair without disrupting a running demonstration with `.\scripts\manage-api-integration-keys.ps1 -Mode Prepare`. For activation, arrange a maintenance window, stop the mock and Spring Boot manually, then run `.\scripts\manage-api-integration-keys.ps1 -Mode Activate`; it refuses to replace the local configuration while either API port is listening. Start the mock and backend again, then copy the new external key explicitly. No process is stopped by these commands.
+
+Financial write requests require an `idempotencyKey` UUID in the JSON body for fines, payments, fund entries, expenses, and corrections. Retry an uncertain submission with the same key and unchanged details; start a separate transaction with a new key. The Vue app retains pending keys in browser storage, scoped to the signed-in username, until the request succeeds. Apply `backend/migrations/20261104_financial_idempotency.sql` to any target database before deploying the backend change; migrations are not run automatically.
 
 The Vue app uses the same-origin `/api` path through its development proxy. The Flutter app accepts an API base URL at build/run time with `--dart-define=API_BASE_URL=...` or on its sign-in screen. Android emulator `10.0.2.2` refers to the development computer; it is not the correct address for a physical device or another computer. LAN sharing requires separately approved network binding, firewall, CORS, and HTTPS configuration.
 

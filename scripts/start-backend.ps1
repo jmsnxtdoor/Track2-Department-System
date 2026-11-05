@@ -17,6 +17,7 @@ $backendDirectory = Join-Path $projectRoot 'backend'
 $databaseDataDirectory = Join-Path $projectRoot 'data\postgres'
 $databaseEnvPath = Join-Path $projectRoot 'database\.env'
 $backendEnvPath = Join-Path $backendDirectory '.env'
+$integrationEnvPath = Join-Path $backendDirectory '.env.integration.local'
 $corsEnvPath = Join-Path $backendDirectory '.env.cors.local'
 $javaHome = Join-Path $projectRoot 'tools\jdk-21'
 $maven = 'C:\Maven\apache-maven-3.9.9\bin\mvn.cmd'
@@ -88,6 +89,10 @@ function Read-EnvFile([string]$Path) {
 
 $databaseSettings = Read-EnvFile $databaseEnvPath
 $accountSettings = Read-EnvFile $backendEnvPath
+$integrationSettings = @{}
+if (Test-Path -LiteralPath $integrationEnvPath -PathType Leaf) {
+    $integrationSettings = Read-EnvFile $integrationEnvPath
+}
 $corsSettings = Read-EnvFile $corsEnvPath
 $missingConfiguration = @()
 foreach ($setting in @(
@@ -248,6 +253,8 @@ $env:ADMIN_PASSWORD = $accountSettings['ADMIN_PASSWORD']
 $env:TREASURER_PASSWORD = $accountSettings['TREASURER_PASSWORD']
 $env:OFFICER_PASSWORD = $accountSettings['OFFICER_PASSWORD']
 $env:STUDENT_PASSWORD = $accountSettings['STUDENT_PASSWORD']
+$env:TRACK2_INTEGRATION_API_KEY = $integrationSettings['TRACK2_INTEGRATION_API_KEY']
+$env:EXTERNAL_API_ALLOWED_ENDPOINTS = $integrationSettings['EXTERNAL_API_ALLOWED_ENDPOINTS']
 $env:SPRING_PROFILES_ACTIVE = 'dev'
 $env:SERVER_ADDRESS = $ServerAddress
 $env:PORT = '8080'

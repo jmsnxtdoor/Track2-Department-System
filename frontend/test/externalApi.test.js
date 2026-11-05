@@ -1,62 +1,62 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { fetchExternalJson, validateExternalApiUrl } from '../src/externalApi.js';
+import { buildExternalApiRequest, validateExternalApiUrl } from '../src/externalApi.js';
 
-test('accepts HTTPS API URLs without embedded credentials or fragments', () => {
+test('accepts HTTPS endpoints and the exact loopback development protocol', () => {
   assert.equal(
-    validateExternalApiUrl(' https://api.example.test/v1/students '),
-    'https://api.example.test/v1/students',
+    validateExternalApiUrl(' https://api.example.test/v1/summary '),
+    'https://api.example.test/v1/summary',
+  );
+  assert.equal(
+    validateExternalApiUrl('http://127.0.0.1:8091/v1/demo'),
+    'http://127.0.0.1:8091/v1/demo',
   );
   assert.throws(() => validateExternalApiUrl('http://api.example.test/data'), /HTTPS/);
-  assert.throws(() => validateExternalApiUrl('https://user:pass@api.example.test/data'), /username or password/);
+  assert.throws(() => validateExternalApiUrl('http://localhost:8091/data'), /HTTPS/);
   assert.throws(() => validateExternalApiUrl('https://api.example.test/data#private'), /fragment/);
-  assert.throws(() => validateExternalApiUrl('https://api.example.test/data?access_token=secret'), /credentials/);
+  assert.throws(() => validateExternalApiUrl('https://api.example.test/data?api_key=secret'), /credentials/);
 });
 
-test('fetches JSON with GET and sends an optional bearer token only to the API host', async () => {
-  const originalFetch = globalThis.fetch;
-  let requestUrl;
-  let requestOptions;
-  globalThis.fetch = async (url, options) => {
-    requestUrl = url;
-    requestOptions = options;
-    return new Response('{"items":[{"id":1}]}', {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    });
-  };
-
-  try {
-    assert.deepEqual(
-      await fetchExternalJson('https://api.example.test/v1/items', 'temporary-token'),
-      { items: [{ id: 1 }] },
-    );
-    assert.equal(requestUrl, 'https://api.example.test/v1/items');
-    assert.equal(requestOptions.method, 'GET');
-    assert.equal(requestOptions.headers.Authorization, 'Bearer temporary-token');
-    assert.equal(requestOptions.credentials, 'omit');
-    assert.equal(requestOptions.redirect, 'error');
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+test('rejects credentials embedded in URL authority and validates length', () => {
+  assert.throws(
+    () => validateExternalApiUrl('https://name:password@api.example.test/data'),
+    /username or password/,
+  );
+  assert.throws(() => validateExternalApiUrl(`https://api.example.test/${'a'.repeat(2049)}`), /too long/);
 });
 
-test('reports non-JSON and unsuccessful external API responses', async () => {
-  const originalFetch = globalThis.fetch;
-  try {
-    globalThis.fetch = async () => new Response('<html>no</html>', {
-      status: 200,
-      headers: { 'content-type': 'text/html' },
-    });
-    await assert.rejects(fetchExternalJson('https://api.example.test/data'), /not JSON/);
+test('builds one-shot API-key and bearer requests without persisting credentials', () => {
+  assert.deepEqual(
+    buildExternalApiRequest('http://127.0.0.1:8091/v1/demo', 'API_KEY', 'demo-key'),
+    {
+      url: 'http://127.0.0.1:8091/v1/demo',
+      authenticationType: 'API_KEY',
+      credential: 'demo-key',
+    },
+  );
+  assert.equal(
+    buildExternalApiRequest('https://api.example.test/v1/data', 'BEARER', 'temporary-token').authenticationType,
+    'BEARER',
+  );
+  assert.throws(() => buildExternalApiRequest('https://api.example.test/v1/data', 'API_KEY'), /Enter the API credential/);
+  assert.throws(
+    () => buildExternalApiRequest('https://api.example.test/v1/data', 'NONE', 'unexpected'),
+    /Clear the API credential/,
+  );
+});
 
-    globalThis.fetch = async () => new Response('{"error":"unauthorized"}', {
-      status: 401,
-      headers: { 'content-type': 'application/json' },
-    });
-    await assert.rejects(fetchExternalJson('https://api.example.test/data'), /HTTP 401/);
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+test('requires a credential for API-key authentication and keeps no-auth requests empty', () => {
+  assert.throws(
+    () => buildExternalApiRequest('https://api.example.test/v1/data', 'API_KEY', '  '),
+    /Enter the API credential/,
+  );
+  assert.deepEqual(
+    buildExternalApiRequest('https://api.example.test/v1/data', 'NONE', ''),
+    {
+      url: 'https://api.example.test/v1/data',
+      authenticationType: 'NONE',
+      credential: '',
+    },
+  );
 });
