@@ -17,7 +17,7 @@ class ExternalApiServiceTest {
     void forwardsAuthenticationAndReturnsStatusWithJson() throws Exception {
         var json = new ObjectMapper().readTree("{\"source\":\"demo\",\"echo\":\"isolated-key\"}");
         CapturingTransport transport = new CapturingTransport(new ExternalApiTransport.ExternalApiResponse(200, json));
-        ExternalApiService service = new ExternalApiService(transport, DEMO_ENDPOINT);
+        ExternalApiService service = new ExternalApiService(transport, DEMO_ENDPOINT, "");
 
         var result = service.fetch(DEMO_ENDPOINT, ExternalApiController.AuthenticationType.API_KEY, "isolated-key");
 
@@ -25,6 +25,7 @@ class ExternalApiServiceTest {
         assertEquals(URI.create(DEMO_ENDPOINT), transport.target);
         assertEquals(ExternalApiController.AuthenticationType.API_KEY, transport.authenticationType);
         assertEquals("isolated-key", transport.credential);
+        assertEquals(false, transport.allowPrivateDestination);
         assertEquals("[REDACTED]", result.data().get("echo").asText());
     }
 
@@ -32,7 +33,7 @@ class ExternalApiServiceTest {
     void acceptsBearerAuthenticationAndKeepsUpstreamUnauthorizedStatusVisible() throws Exception {
         var json = new ObjectMapper().readTree("{\"message\":\"invalid credentials\"}");
         CapturingTransport transport = new CapturingTransport(new ExternalApiTransport.ExternalApiResponse(401, json));
-        ExternalApiService service = new ExternalApiService(transport, DEMO_ENDPOINT);
+        ExternalApiService service = new ExternalApiService(transport, DEMO_ENDPOINT, "");
 
         var result = service.fetch(DEMO_ENDPOINT, ExternalApiController.AuthenticationType.BEARER, "temporary-token");
 
@@ -43,7 +44,7 @@ class ExternalApiServiceTest {
     @Test
     void rejectsUntrustedHostsRemoteHttpAndCredentialQueryParametersBeforeCallingTransport() {
         CapturingTransport transport = new CapturingTransport(null);
-        ExternalApiService service = new ExternalApiService(transport, DEMO_ENDPOINT);
+        ExternalApiService service = new ExternalApiService(transport, DEMO_ENDPOINT, "");
 
         assertEquals(403, assertThrows(ResponseStatusException.class,
                 () -> service.fetch("https://api.example.test/private",
@@ -62,16 +63,39 @@ class ExternalApiServiceTest {
     @Test
     void reportsMissingAllowlistAndCredentialWithoutMakingNetworkCalls() {
         CapturingTransport transport = new CapturingTransport(null);
-        ExternalApiService service = new ExternalApiService(transport, "");
+        ExternalApiService service = new ExternalApiService(transport, "", "");
 
         assertEquals(503, assertThrows(ResponseStatusException.class,
                 () -> service.fetch(DEMO_ENDPOINT, ExternalApiController.AuthenticationType.NONE, ""))
                 .getStatusCode().value());
         assertEquals(400, assertThrows(ResponseStatusException.class,
-                () -> new ExternalApiService(transport, DEMO_ENDPOINT).fetch(
+                () -> new ExternalApiService(transport, DEMO_ENDPOINT, "").fetch(
                         DEMO_ENDPOINT, ExternalApiController.AuthenticationType.API_KEY, ""))
                 .getStatusCode().value());
         assertTrue(transport.target == null);
+    }
+
+    @Test
+    void allowsOnlyExplicitHttpsPrivateEndpointsAndMarksThemForPrivateAddressValidation() throws Exception {
+        String lanEndpoint = "https://track2-a.lan:8443/api/integration/v1/summary";
+        CapturingTransport transport = new CapturingTransport(
+                new ExternalApiTransport.ExternalApiResponse(200, new ObjectMapper().readTree("{\"status\":\"Available\"}")));
+        ExternalApiService service = new ExternalApiService(transport, "", lanEndpoint);
+
+        service.fetch(lanEndpoint, ExternalApiController.AuthenticationType.API_KEY, "peer-key");
+
+        assertEquals(URI.create(lanEndpoint), transport.target);
+        assertEquals(true, transport.allowPrivateDestination);
+
+        assertEquals(403, assertThrows(ResponseStatusException.class,
+                () -> service.fetch("https://track2-a.lan:8443/api/other",
+                        ExternalApiController.AuthenticationType.API_KEY, "peer-key"))
+                .getStatusCode().value());
+        assertEquals(400, assertThrows(ResponseStatusException.class,
+                () -> new ExternalApiService(transport, "", "http://track2-a.lan:8443/api/integration/v1/summary")
+                        .fetch("http://track2-a.lan:8443/api/integration/v1/summary",
+                                ExternalApiController.AuthenticationType.API_KEY, "peer-key"))
+                .getStatusCode().value());
     }
 
     private static final class CapturingTransport implements ExternalApiTransport {
@@ -79,6 +103,7 @@ class ExternalApiServiceTest {
         private URI target;
         private ExternalApiController.AuthenticationType authenticationType;
         private String credential;
+        private boolean allowPrivateDestination;
 
         private CapturingTransport(ExternalApiResponse response) {
             this.response = response;
@@ -86,10 +111,14 @@ class ExternalApiServiceTest {
 
         @Override
         public ExternalApiResponse get(
-                URI target, ExternalApiController.AuthenticationType authenticationType, String credential) {
+                URI target,
+                ExternalApiController.AuthenticationType authenticationType,
+                String credential,
+                boolean allowPrivateDestination) {
             this.target = target;
             this.authenticationType = authenticationType;
             this.credential = credential;
+            this.allowPrivateDestination = allowPrivateDestination;
             return response;
         }
     }

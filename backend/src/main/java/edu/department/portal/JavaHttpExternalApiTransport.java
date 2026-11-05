@@ -35,8 +35,11 @@ final class JavaHttpExternalApiTransport implements ExternalApiTransport {
 
     @Override
     public ExternalApiResponse get(
-            URI target, ExternalApiController.AuthenticationType authenticationType, String credential) {
-        verifyResolvedDestination(target);
+            URI target,
+            ExternalApiController.AuthenticationType authenticationType,
+            String credential,
+            boolean allowPrivateDestination) {
+        verifyResolvedDestination(target, allowPrivateDestination);
         HttpRequest.Builder request = HttpRequest.newBuilder(target)
                 .timeout(REQUEST_TIMEOUT)
                 .header("Accept", "application/json")
@@ -82,14 +85,21 @@ final class JavaHttpExternalApiTransport implements ExternalApiTransport {
         return false;
     }
 
-    private static void verifyResolvedDestination(URI target) {
+    private static void verifyResolvedDestination(URI target, boolean allowPrivateDestination) {
         if ("http".equalsIgnoreCase(target.getScheme())) {
             return;
         }
         try {
             InetAddress[] addresses = InetAddress.getAllByName(target.getHost());
-            if (addresses.length == 0 || Arrays.stream(addresses).anyMatch(JavaHttpExternalApiTransport::isNonPublic)) {
-                throw new ExternalApiFailure("The configured external API host resolves to a private or reserved address.");
+            boolean unsafeAddress = allowPrivateDestination
+                    ? addresses.length == 0
+                            || Arrays.stream(addresses).anyMatch(address -> !isPrivateNetworkAddress(address))
+                    : addresses.length == 0
+                            || Arrays.stream(addresses).anyMatch(JavaHttpExternalApiTransport::isNonPublic);
+            if (unsafeAddress) {
+                throw new ExternalApiFailure(allowPrivateDestination
+                        ? "The configured LAN API host must resolve only to private-network addresses."
+                        : "The configured external API host resolves to a private or reserved address.");
             }
         } catch (IOException failure) {
             throw new ExternalApiFailure("The configured external API host could not be resolved.", failure);
@@ -116,6 +126,22 @@ final class JavaHttpExternalApiTransport implements ExternalApiTransport {
                 || first == 198 && (second == 18 || second == 19 || second == 51 && third == 100)
                 || first == 203 && second == 0 && third == 113
                 || first >= 224;
+    }
+
+    static boolean isPrivateNetworkAddress(InetAddress address) {
+        if (address.isAnyLocalAddress() || address.isLoopbackAddress() || address.isLinkLocalAddress()
+                || address.isMulticastAddress()) {
+            return false;
+        }
+        byte[] bytes = address.getAddress();
+        if (bytes.length == 16) {
+            return (bytes[0] & 0xfe) == 0xfc;
+        }
+        int first = bytes[0] & 0xff;
+        int second = bytes[1] & 0xff;
+        return first == 10
+                || first == 172 && second >= 16 && second <= 31
+                || first == 192 && second == 168;
     }
 
     static final class ExternalApiFailure extends RuntimeException {

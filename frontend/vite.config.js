@@ -14,6 +14,7 @@ const certificateDirectory = resolve(localAppData, 'Track2-HTTPS');
 export default defineConfig({
   plugins: [vue(), vuetify({ autoImport: true })],
   server: {
+    host: '127.0.0.1',
     https: {
       cert: readFileSync(resolve(certificateDirectory, 'track2.pem')),
       key: readFileSync(resolve(certificateDirectory, 'track2-key.pem')),

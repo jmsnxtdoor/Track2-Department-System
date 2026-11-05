@@ -12,6 +12,10 @@ test('accepts HTTPS endpoints and the exact loopback development protocol', () =
     validateExternalApiUrl('http://127.0.0.1:8091/v1/demo'),
     'http://127.0.0.1:8091/v1/demo',
   );
+  assert.equal(
+    validateExternalApiUrl('https://track2-a.lan:8443/api/integration/v1/summary'),
+    'https://track2-a.lan:8443/api/integration/v1/summary',
+  );
   assert.throws(() => validateExternalApiUrl('http://api.example.test/data'), /HTTPS/);
   assert.throws(() => validateExternalApiUrl('http://localhost:8091/data'), /HTTPS/);
   assert.throws(() => validateExternalApiUrl('https://api.example.test/data#private'), /fragment/);

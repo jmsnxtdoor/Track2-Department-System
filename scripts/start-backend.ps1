@@ -9,7 +9,7 @@ $parsedServerAddress = $null
 if ($ServerAddress -cne '127.0.0.1' -or
     -not [System.Net.IPAddress]::TryParse($ServerAddress, [ref]$parsedServerAddress) -or
     $parsedServerAddress.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork) {
-    throw 'Spring Boot must remain bound to 127.0.0.1; LAN clients must use the HTTPS Vite proxy.'
+    throw 'The main Spring Boot application must remain bound to 127.0.0.1.'
 }
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
@@ -87,6 +87,20 @@ function Read-EnvFile([string]$Path) {
     return $values
 }
 
+function Test-PrivateIpv4([string]$Address) {
+    $parsedAddress = $null
+    if (-not [System.Net.IPAddress]::TryParse($Address, [ref]$parsedAddress) -or
+        $parsedAddress.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork -or
+        $parsedAddress.IsLoopback()) {
+        return $false
+    }
+
+    $bytes = $parsedAddress.GetAddressBytes()
+    return $bytes[0] -eq 10 -or
+        ($bytes[0] -eq 172 -and $bytes[1] -ge 16 -and $bytes[1] -le 31) -or
+        ($bytes[0] -eq 192 -and $bytes[1] -eq 168)
+}
+
 $databaseSettings = Read-EnvFile $databaseEnvPath
 $accountSettings = Read-EnvFile $backendEnvPath
 $integrationSettings = @{}
@@ -152,6 +166,34 @@ foreach ($corsOrigin in $corsOrigins) {
 if ($databaseSettings['DATABASE_URL'] -cne $expectedDatabaseUrl) {
     throw 'Refusing to start: DATABASE_URL is not the approved Track 2 development database.'
 }
+if ($null -ne $integrationSettings['TRACK2_LAN_API_ENABLED'] -and
+    $integrationSettings['TRACK2_LAN_API_ENABLED'] -cnotin @('true', 'false')) {
+    throw 'Refusing to start: TRACK2_LAN_API_ENABLED must be exactly true or false.'
+}
+$lanApiEnabled = $integrationSettings['TRACK2_LAN_API_ENABLED'] -ceq 'true'
+$lanApiPort = 8443
+$lanApiPortText = $integrationSettings['TRACK2_LAN_API_PORT']
+if (-not [string]::IsNullOrWhiteSpace($lanApiPortText) -and
+    (-not [int]::TryParse($lanApiPortText, [ref]$lanApiPort) -or $lanApiPort -lt 1024 -or $lanApiPort -gt 65535)) {
+    throw 'Refusing to start: TRACK2_LAN_API_PORT must be between 1024 and 65535.'
+}
+if ($lanApiEnabled) {
+    $lanBindAddress = $integrationSettings['TRACK2_LAN_API_BIND_ADDRESS']
+    $lanPartnerAddress = $integrationSettings['TRACK2_LAN_API_PARTNER_ADDRESS']
+    $lanKeyStore = $integrationSettings['TRACK2_LAN_API_KEYSTORE']
+    if (-not (Test-PrivateIpv4 $lanBindAddress) -or -not (Test-PrivateIpv4 $lanPartnerAddress)) {
+        throw 'Refusing to start: configure private IPv4 addresses for the laptop and its approved peer.'
+    }
+    if ([string]::IsNullOrWhiteSpace($lanKeyStore) -or
+        -not (Test-Path -LiteralPath $lanKeyStore -PathType Leaf) -or
+        [string]::IsNullOrWhiteSpace($integrationSettings['TRACK2_LAN_API_KEYSTORE_PASSWORD']) -or
+        [string]::IsNullOrWhiteSpace($integrationSettings['TRACK2_INTEGRATION_API_KEY'])) {
+        throw 'Refusing to start: the LAN listener requires its TLS keystore, password, and existing provider API key.'
+    }
+    if (@(Get-NetIPAddress -AddressFamily IPv4 -IPAddress $lanBindAddress -ErrorAction SilentlyContinue).Count -eq 0) {
+        throw 'Refusing to start: the configured LAN bind address is not assigned to this laptop.'
+    }
+}
 if ($databaseSettings['DATABASE_USER'] -cne 'track2_app' -or
     [string]::IsNullOrWhiteSpace($databaseSettings['DATABASE_PASSWORD'])) {
     throw 'Refusing to start: Track 2 database credentials are incomplete or unexpected.'
@@ -177,6 +219,31 @@ if ($applicationProperties -match 'jdbc:postgresql://[^/\s:]+:5432/' -or
 $listeners = @(Get-NetTCPConnection -State Listen -LocalPort 8080 -ErrorAction SilentlyContinue)
 if ($listeners.Count -gt 0) {
     throw 'Refusing to start: port 8080 is already in use.'
+}
+if ($lanApiEnabled) {
+    if (@(Get-NetTCPConnection -State Listen -LocalPort $lanApiPort -ErrorAction SilentlyContinue).Count -gt 0) {
+        throw 'Refusing to start: the configured LAN integration port is already in use.'
+    }
+    $approvedFirewallRule = $false
+    $firewallRules = Get-NetFirewallRule -DisplayName 'Track2 read-only integration HTTPS' -ErrorAction SilentlyContinue |
+        Where-Object { $_.Enabled -eq 'True' -and $_.Direction -eq 'Inbound' -and $_.Action -eq 'Allow' }
+    foreach ($rule in $firewallRules) {
+        $portFilter = Get-NetFirewallPortFilter -AssociatedNetFirewallRule $rule
+        $addressFilter = Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $rule
+        $localPorts = @($portFilter.LocalPort | ForEach-Object { [string]$_ })
+        $localAddresses = @($addressFilter.LocalAddress | ForEach-Object { [string]$_ })
+        $remoteAddresses = @($addressFilter.RemoteAddress | ForEach-Object { [string]$_ })
+        if ($portFilter.Protocol -eq 'TCP' -and
+            $localPorts.Count -eq 1 -and $localPorts[0] -eq [string]$lanApiPort -and
+            $localAddresses.Count -eq 1 -and $localAddresses[0] -eq $lanBindAddress -and
+            $remoteAddresses.Count -eq 1 -and $remoteAddresses[0] -eq $lanPartnerAddress) {
+            $approvedFirewallRule = $true
+            break
+        }
+    }
+    if (-not $approvedFirewallRule) {
+        throw 'Refusing to start: add the exact peer-scoped Windows Firewall rule before enabling the LAN listener.'
+    }
 }
 
 $postmasterPidPath = Join-Path $databaseDataDirectory 'postmaster.pid'
@@ -255,6 +322,12 @@ $env:OFFICER_PASSWORD = $accountSettings['OFFICER_PASSWORD']
 $env:STUDENT_PASSWORD = $accountSettings['STUDENT_PASSWORD']
 $env:TRACK2_INTEGRATION_API_KEY = $integrationSettings['TRACK2_INTEGRATION_API_KEY']
 $env:EXTERNAL_API_ALLOWED_ENDPOINTS = $integrationSettings['EXTERNAL_API_ALLOWED_ENDPOINTS']
+$env:EXTERNAL_API_ALLOWED_PRIVATE_ENDPOINTS = $integrationSettings['EXTERNAL_API_ALLOWED_PRIVATE_ENDPOINTS']
+$env:TRACK2_LAN_API_ENABLED = if ($lanApiEnabled) { 'true' } else { 'false' }
+$env:TRACK2_LAN_API_BIND_ADDRESS = $integrationSettings['TRACK2_LAN_API_BIND_ADDRESS']
+$env:TRACK2_LAN_API_PORT = [string]$lanApiPort
+$env:TRACK2_LAN_API_KEYSTORE = $integrationSettings['TRACK2_LAN_API_KEYSTORE']
+$env:TRACK2_LAN_API_KEYSTORE_PASSWORD = $integrationSettings['TRACK2_LAN_API_KEYSTORE_PASSWORD']
 $env:SPRING_PROFILES_ACTIVE = 'dev'
 $env:SERVER_ADDRESS = $ServerAddress
 $env:PORT = '8080'

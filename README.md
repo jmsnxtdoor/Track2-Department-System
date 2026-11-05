@@ -119,11 +119,13 @@ The API listens on `127.0.0.1:8080` by default. Health check: <http://127.0.0.1:
 
 ### Optional private-LAN API access
 
-The REST API already exposes student, attendance, finance, and report endpoints. Swagger UI is at `/swagger-ui.html`, and the OpenAPI JSON is at `/v3/api-docs`. API endpoints use HTTP Basic authentication and the application's role-based permissions; use an account with only the permissions the integration needs.
+The only API route exposed to a peer laptop is a dedicated HTTPS listener for `GET /api/integration/v1/summary`. It returns a non-personal status summary and requires the receiving laptop's `X-API-Key`. The main Spring Boot listener and PostgreSQL remain bound to loopback; the HTTPS Vite server is loopback-only as well. The LAN listener is disabled unless explicitly enabled with a private bind address, a PKCS12 TLS certificate, and a Windows Firewall rule for one peer IPv4 address. It returns 404 for every other path, method, or query string on that listener. Do not expose the general API, Vite, Swagger, or PostgreSQL to the LAN.
 
-Administrators can use the web app's **External API** page to make a one-time, read-only GET request to an HTTPS endpoint that returns JSON. Requests are made directly by the browser, so the external API must allow the web app's origin through CORS. An optional Bearer token is sent only to that endpoint, is cleared after the request, and is not saved. This does not import, store, or synchronize the external dataset; mapping or syncing requires that system's API documentation.
+Administrators can use the web app's **External API** page to make a one-time, read-only GET request to an HTTPS endpoint that returns JSON. The request is made by the local Spring Boot backend; the remote API does not need browser CORS access. An optional Bearer token is sent only to that endpoint, is cleared after the request, and is not saved. This does not import, store, or synchronize the external dataset; mapping or syncing requires that system's API documentation.
 
-For HTTPS LAN testing, expose only the Vue/Vite HTTPS server to the trusted network. Its `/api` proxy forwards to `http://127.0.0.1:8080`; Spring Boot and PostgreSQL stay bound to loopback. Do not pass a LAN address to `-ServerAddress`. No Windows Firewall or certificate trust changes are made by the startup helper.
+The Administrator **External API** page makes a one-time server-side GET to an exactly allowlisted HTTPS URL. Public endpoints stay in `EXTERNAL_API_ALLOWED_ENDPOINTS`; peer LAN URLs must be explicitly placed in `EXTERNAL_API_ALLOWED_PRIVATE_ENDPOINTS`. The LAN opt-in accepts only private IPv4/IPv6 unique-local resolutions and still uses normal Java certificate-chain and hostname verification. Do not use real student or financial data in demonstrations.
+
+The remote GET is made by Spring Boot, not directly by the browser, so the remote peer does not need browser CORS access. The browser communicates only with its same-origin local backend.
 
 ## Vue administrative app setup
 
@@ -205,7 +207,7 @@ Use the emulator URL `http://10.0.2.2:8080/api` only for local emulator testing.
 
 ### Computer and phone connectivity
 
-The Vue HTTPS development server can serve the UI to a trusted LAN client; its `/api` proxy reaches Spring Boot over loopback. The startup helper and application default keep Spring Boot bound to `127.0.0.1`, and PostgreSQL remains loopback-only. Do not access the backend directly from another device.
+The Vue development server is available only at `https://127.0.0.1:5173/`; it is not served to LAN clients. The optional Spring Boot integration connector binds only the configured private Wi-Fi IPv4 address, and exposes only the API summary route. The startup helper keeps the main API listener on `127.0.0.1` and verifies the peer-scoped firewall rule. PostgreSQL remains loopback-only.
 
 External clients such as Flutter must use a separately approved HTTPS API endpoint; the local development backend is not directly reachable from other devices. Android native HTTP requests do not use browser CORS, but still require network routing and valid TLS. Do not expose PostgreSQL port 55432, use wildcard CORS, or send Basic credentials over plain HTTP. This repository does not include a production reverse proxy, firewall rules, or public deployment configuration.
 
@@ -236,11 +238,64 @@ The REST API base path is `/api`. Useful route groups include:
 | Shared system integration summary | `GET /api/integration/v1/summary` |
 | Administrator external API proxy | `POST /api/admin/external-api/fetch` |
 
-Requests and responses use JSON. Authentication is HTTP Basic, and the backend enforces role permissions and student ownership. Do not embed credentials in a client, source file, QR code, or URL. Use HTTPS before sending credentials or accessing protected data across computers. LAN access is not currently enabled: the API and PostgreSQL are loopback-bound. Do not expose PostgreSQL.
+Requests and responses use JSON. Authentication is HTTP Basic, and the backend enforces role permissions and student ownership. Do not embed credentials in a client, source file, QR code, or URL. Use HTTPS before sending credentials or accessing protected data across computers. Only the dedicated non-personal integration summary is eligible for the narrowly scoped LAN listener; do not expose PostgreSQL.
 
 ### Shared API-key demonstration
 
 The provider endpoint is separate from application login and requires `X-API-Key`, configured locally with `TRACK2_INTEGRATION_API_KEY`. It returns only a non-personal service summary. The Administrator External API page sends GET requests through Spring Boot; it supports `X-API-Key` and Bearer authentication, exact endpoint allowlisting, HTTPS for remote systems, a 10-second request timeout, and a 1 MB JSON response limit. Add approved remote HTTPS endpoints to the comma-separated `EXTERNAL_API_ALLOWED_ENDPOINTS` setting in the ignored `backend/.env.integration.local`. Do not put credentials in URLs.
+
+The provider endpoint is separate from application login. Each laptop retains its own independently generated provider key; never replace or reuse the other laptop's key. The Administrator External API page makes GET requests through Spring Boot, which enforces exact endpoint allowlisting, HTTPS for remote systems, a 10-second request timeout, and a 1 MB JSON response limit. The local mock allowlist and mock flow remain supported.
+
+#### Two-laptop setup (Windows)
+
+Perform these steps only on a trusted Wi-Fi network that allows peer-to-peer clients. Do not use a guest network or public hotspot. The partner's computer must be available to obtain its current private IPv4 address and transfer its public CA certificate and API key securely.
+
+1. Laptop A's `track2-a.lan` certificate is already prepared locally; its public CA certificate is `%LOCALAPPDATA%\Track2-HTTPS\track2-a-lan-ca.cer`. On laptop B, prepare its independent certificate:
+
+   ```powershell
+   .\scripts\new-track2-lan-certificate.ps1 -HostName track2-b.lan
+   ```
+
+   The command creates a local CA and a hostname-specific TLS certificate in `%LOCALAPPDATA%\Track2-HTTPS`, writes the PKCS12 path and a random password to the Git-ignored, ACL-protected `backend/.env.integration.local`, and leaves the listener disabled. For a fresh laptop A, run it once with `-HostName track2-a.lan`. Share only the generated `*-ca.cer` public CA certificate and its independently confirmed SHA-256 fingerprint. Never share the `.pfx`, its password, the CA private key, or any database/application credentials.
+
+2. On each receiving laptop, verify the peer CA fingerprint with the peer over a separate trusted channel, then trust that CA in Windows and in the Java runtime used by Spring Boot. Replace the sample path/alias as needed; use an alias unique to the peer:
+
+   ```powershell
+   Get-FileHash -Algorithm SHA256 '<path-to-peer-ca.cer>'
+   Import-Certificate -FilePath '<peer-ca.cer>' -CertStoreLocation Cert:\CurrentUser\Root
+   $javaHome = if ($env:JAVA_HOME) { $env:JAVA_HOME } else { (Resolve-Path '.\tools\jdk-21').Path }
+   & "$javaHome\bin\keytool.exe" -importcert -trustcacerts -alias track2-peer-ca -file '<peer-ca.cer>' -keystore "$javaHome\lib\security\cacerts"
+   ```
+
+   For this workspace's startup helper, `JAVA_HOME` resolves to `tools\jdk-21` unless overridden. `keytool` will prompt for the trust-store password and confirmation; retain existing root certificates. Do not use trust-all settings, `curl -k`, or disable hostname checks. To remove the Java trust entry after the demo, run `& "$javaHome\bin\keytool.exe" -delete -alias track2-peer-ca -keystore "$javaHome\lib\security\cacerts"` and enter the trust-store password. Remove the Windows root entry using the verified peer certificate thumbprint.
+
+3. Exchange only the laptops' current private Wi-Fi IPv4 addresses and add a host entry on each receiving laptop (edit `C:\Windows\System32\drivers\etc\hosts` as Administrator):
+
+   ```text
+   <A_WIFI_PRIVATE_IPV4> track2-a.lan
+   <B_WIFI_PRIVATE_IPV4> track2-b.lan
+   ```
+
+   Find the Wi-Fi address with `Get-NetIPAddress -AddressFamily IPv4`; do not use `127.0.0.1`, `169.254.*`, a public address, or a guessed address. The hostname in the URL must exactly match the TLS certificate.
+
+4. On each laptop, enable its listener with its own Wi-Fi address and the other laptop's address. Run PowerShell as Administrator because the command installs a firewall rule scoped to exactly that local address, TCP port 8443, and peer address:
+
+   ```powershell
+   .\scripts\enable-track2-lan-integration.ps1 -BindAddress <THIS_WIFI_PRIVATE_IPV4> -PartnerAddress <PEER_WIFI_PRIVATE_IPV4>
+   ```
+
+   This does not stop or restart services. Do not start or restart Spring Boot without approval. The normal launcher still binds the application API to `127.0.0.1:8080`; when LAN integration is enabled it adds only the separately bound TLS connector. The launcher refuses startup if the exact peer firewall rule, certificate, or private bind address is missing.
+
+5. Add the peer's exact provider URL to the local `EXTERNAL_API_ALLOWED_PRIVATE_ENDPOINTS` setting in `backend/.env.integration.local` (preserve all other entries and existing keys):
+
+   - On laptop A: `https://track2-b.lan:8443/api/integration/v1/summary`
+   - On laptop B: `https://track2-a.lan:8443/api/integration/v1/summary`
+
+   Configure each laptop's current `TRACK2_INTEGRATION_API_KEY` as the key the other laptop uses to fetch its summary. Exchange these keys out of band; never place them in a URL, source file, command history, or shared chat. Restart Spring Boot only with the owner's approval so the launcher loads the new configuration.
+
+6. For a one-way check from A to B, sign in as Admin on A, open **External API**, enter A's exact allowlisted URL for B, choose **X-API-Key**, paste B's provider key, and select **Get JSON data**. Repeat in the reverse direction from B using A's URL and key. Each response must identify `NON_PERSONAL_SUMMARY`; the fetch is read-only and does not create, change, or synchronize database records. Confirm `https://127.0.0.1:5173/` still opens locally on each laptop.
+
+To disable access, set `TRACK2_LAN_API_ENABLED=false`, remove the **Track2 read-only integration HTTPS** firewall rule (`Remove-NetFirewallRule -DisplayName 'Track2 read-only integration HTTPS'`), remove the peer endpoint from the private allowlist, and restart Spring Boot with approval. Remove the peer's hosts entry and imported CA when finished. If either Wi-Fi address changes, update the hosts entry, private allowlist, bind/firewall settings, and restart only with approval.
 
 Run the local loopback-only demonstration from the project root:
 

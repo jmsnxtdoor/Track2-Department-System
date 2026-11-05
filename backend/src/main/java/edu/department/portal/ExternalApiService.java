@@ -22,17 +22,21 @@ public class ExternalApiService {
             Set.of("access_token", "api_key", "apikey", "client_secret", "password", "secret", "token");
     private final ExternalApiTransport transport;
     private final String allowedEndpoints;
+    private final String allowedPrivateEndpoints;
 
     ExternalApiService(
             ExternalApiTransport transport,
-            @Value("${external-api.allowed-endpoints:}") String allowedEndpoints) {
+            @Value("${external-api.allowed-endpoints:}") String allowedEndpoints,
+            @Value("${external-api.allowed-private-endpoints:}") String allowedPrivateEndpoints) {
         this.transport = transport;
         this.allowedEndpoints = allowedEndpoints;
+        this.allowedPrivateEndpoints = allowedPrivateEndpoints;
     }
 
     public ExternalApiResult fetch(
             String rawUrl, ExternalApiController.AuthenticationType authenticationType, String rawCredential) {
-        if (allowedEndpoints == null || allowedEndpoints.isBlank()) {
+        if ((allowedEndpoints == null || allowedEndpoints.isBlank())
+                && (allowedPrivateEndpoints == null || allowedPrivateEndpoints.isBlank())) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE,
                     "No trusted external API endpoints are configured.");
         }
@@ -55,10 +59,11 @@ public class ExternalApiService {
                     "Clear the credential or choose its authentication method.");
         }
 
-        URI target = validateTarget(rawUrl);
+        ValidatedTarget validatedTarget = validateTarget(rawUrl);
         try {
             ExternalApiTransport.ExternalApiResponse response =
-                    transport.get(target, authenticationType, credential);
+                    transport.get(
+                            validatedTarget.uri(), authenticationType, credential, validatedTarget.allowPrivate());
             JsonNode safeData = redactCredentialEchoes(response.data(), credential);
             return new ExternalApiResult(response.status(), safeData);
         } catch (JavaHttpExternalApiTransport.ExternalApiFailure failure) {
@@ -66,7 +71,7 @@ public class ExternalApiService {
         }
     }
 
-    private URI validateTarget(String rawUrl) {
+    private ValidatedTarget validateTarget(String rawUrl) {
         URI target;
         try {
             target = new URI(rawUrl.trim()).normalize();
@@ -96,12 +101,21 @@ public class ExternalApiService {
                 .map(String::trim)
                 .filter(endpoint -> !endpoint.isEmpty())
                 .toList();
+        List<String> approvedPrivate = Arrays.stream(allowedPrivateEndpoints.split(","))
+                .map(String::trim)
+                .filter(endpoint -> !endpoint.isEmpty())
+                .toList();
         String normalized = target.toASCIIString();
-        if (!approved.contains(normalized)) {
+        boolean allowPrivate = approvedPrivate.contains(normalized);
+        if (!approved.contains(normalized) && !allowPrivate) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN,
                     "This external API endpoint is not on the trusted endpoint allowlist.");
         }
-        return target;
+        if (allowPrivate && !"https".equalsIgnoreCase(target.getScheme())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Private-network endpoints must use HTTPS.");
+        }
+        return new ValidatedTarget(target, allowPrivate);
     }
 
     private static boolean isLoopbackLiteral(String host) {
@@ -142,6 +156,8 @@ public class ExternalApiService {
             }
         }
     }
+
+    private record ValidatedTarget(URI uri, boolean allowPrivate) {}
 
     public record ExternalApiResult(int status, JsonNode data) {}
 }
