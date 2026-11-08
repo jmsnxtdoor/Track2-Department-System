@@ -13,24 +13,31 @@ import java.security.MessageDigest;
 
 final class SharedApiKeyFilter extends OncePerRequestFilter {
     private final byte[] configuredKey;
+    private final IntegrationApiKeyService integrationApiKeys;
 
-    SharedApiKeyFilter(String configuredKey) {
+    SharedApiKeyFilter(String configuredKey, IntegrationApiKeyService integrationApiKeys) {
         this.configuredKey = configuredKey == null ? new byte[0] : configuredKey.getBytes(StandardCharsets.UTF_8);
+        this.integrationApiKeys = integrationApiKeys;
     }
 
     @Override
     protected void doFilterInternal(
             HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
-        if (configuredKey.length == 0) {
-            response.sendError(HttpStatus.SERVICE_UNAVAILABLE.value(), "System integration is not configured.");
-            return;
-        }
-
         String supplied = request.getHeader("X-API-Key");
-        if (supplied == null || supplied.isEmpty() || supplied.length() > 512
-                || !MessageDigest.isEqual(configuredKey, supplied.getBytes(StandardCharsets.UTF_8))) {
-            response.sendError(HttpStatus.UNAUTHORIZED.value(), "A valid X-API-Key is required.");
+        boolean matchesConfiguredKey = supplied != null && !supplied.isEmpty() && supplied.length() <= 512
+                && configuredKey.length > 0
+                && MessageDigest.isEqual(configuredKey, supplied.getBytes(StandardCharsets.UTF_8));
+        boolean matchesManagedKey = supplied != null && !supplied.isEmpty() && supplied.length() <= 512
+                && integrationApiKeys.isValidKey(supplied);
+        if (!matchesConfiguredKey && !matchesManagedKey) {
+            int status = configuredKey.length == 0
+                    ? HttpStatus.SERVICE_UNAVAILABLE.value()
+                    : HttpStatus.UNAUTHORIZED.value();
+            String message = configuredKey.length == 0
+                    ? "System integration is not configured."
+                    : "A valid X-API-Key is required.";
+            response.sendError(status, message);
             return;
         }
 

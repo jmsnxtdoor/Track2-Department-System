@@ -17,13 +17,22 @@ public class OpenApiConfig {
                         "basicAuth",
                         new SecurityScheme()
                                 .type(SecurityScheme.Type.HTTP)
-                                .scheme("basic")));
+                                .scheme("basic"))
+                        .addSecuritySchemes(
+                                "integrationApiKey",
+                                new SecurityScheme()
+                                        .type(SecurityScheme.Type.APIKEY)
+                                        .in(SecurityScheme.In.HEADER)
+                                        .name("X-API-Key")));
     }
 
     @Bean
-    OpenApiCustomizer basicAuthForProtectedApiOperations() {
+    OpenApiCustomizer securitySchemesForApiOperations() {
         return openApi -> openApi.getPaths().forEach((path, pathItem) -> {
-            if (path.startsWith("/api/") && !path.equals("/api/health")) {
+            if (path.startsWith("/api/integration/")) {
+                pathItem.readOperations().forEach(operation ->
+                        operation.addSecurityItem(new SecurityRequirement().addList("integrationApiKey")));
+            } else if (path.startsWith("/api/") && !path.equals("/api/health")) {
                 pathItem.readOperations().forEach(operation ->
                         operation.addSecurityItem(new SecurityRequirement().addList("basicAuth")));
             }

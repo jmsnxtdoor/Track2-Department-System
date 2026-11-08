@@ -7,9 +7,12 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.util.Set;
 
 final class LanIntegrationRouteFilter extends OncePerRequestFilter {
-    private static final String ALLOWED_PATH = "/api/integration/v1/summary";
+    private static final Set<String> ALLOWED_PATHS = Set.of(
+            "/api/integration/v1/summary",
+            "/api/integration/v1/data-summary");
 
     private final int integrationPort;
 
@@ -24,7 +27,7 @@ final class LanIntegrationRouteFilter extends OncePerRequestFilter {
         if (request.getLocalPort() == integrationPort
                 && (!request.isSecure()
                 || !"GET".equals(request.getMethod())
-                || !ALLOWED_PATH.equals(request.getRequestURI())
+                || !ALLOWED_PATHS.contains(request.getRequestURI())
                 || request.getQueryString() != null)) {
             response.setStatus(HttpServletResponse.SC_NOT_FOUND);
             return;

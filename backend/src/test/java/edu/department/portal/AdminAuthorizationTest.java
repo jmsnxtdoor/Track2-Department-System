@@ -33,7 +33,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @WebMvcTest(controllers = {
-        Api.class, UserAdminController.class, AuditAdminController.class, ExternalApiController.class
+        Api.class, UserAdminController.class, AuditAdminController.class, ExternalApiController.class,
+        IntegrationApiKeyAdminController.class
 }, properties = {
         "app.cors.origin=https://127.0.0.1:5173,https://192.168.0.106:5173"
 })
@@ -72,6 +73,9 @@ class AdminAuthorizationTest {
     @MockBean
     private ExternalApiService externalApiService;
 
+    @MockBean
+    private IntegrationApiKeyService integrationApiKeyService;
+
     @Test
     void rejectsWildcardCorsOrigins() {
         assertThrows(IllegalArgumentException.class, () -> SecurityConfig.corsOrigins("*"));
@@ -97,6 +101,17 @@ class AdminAuthorizationTest {
                         .content("{\"url\":\"https://trusted.example.test/summary\","
                                 + "\"authenticationType\":\"NONE\",\"credential\":\"\"}"))
                 .andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/admin/integration-api-keys")).andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/attendance/events")
+                        .header("X-API-Key", "t2-generated-test-only")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"title\":\"Test activity\",\"eventDate\":\"2026-01-02\",\"active\":true}"))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/finance/ledger")
+                        .header("X-API-Key", "t2-generated-test-only")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isUnauthorized());
     }
 
     @Test
@@ -117,6 +132,39 @@ class AdminAuthorizationTest {
                                 + "\"authenticationType\":\"NONE\",\"credential\":\"\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value(200));
+    }
+
+    @Test
+    @WithMockUser(username = "admin", roles = "ADMIN")
+    void adminCanManageIntegrationKeysAndListNeverReturnsAKey() throws Exception {
+        java.time.Instant createdAt = java.time.Instant.parse("2026-01-02T03:04:05Z");
+        when(integrationApiKeyService.list()).thenReturn(List.of(
+                new IntegrationApiKeyService.ApiKeyView(9L, "reports", createdAt, null, "ACTIVE")));
+        when(integrationApiKeyService.create("reports", "admin"))
+                .thenReturn(new IntegrationApiKeyService.CreatedApiKey(9L, "reports", "t2_one-time-test-key", createdAt));
+
+        mvc.perform(get("/api/admin/integration-api-keys"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].status").value("ACTIVE"))
+                .andExpect(jsonPath("$[0].key").doesNotExist())
+                .andExpect(jsonPath("$[0].keyHash").doesNotExist());
+
+        String createResponse = mvc.perform(post("/api/admin/integration-api-keys")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"reports\"}"))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.key").value("t2_one-time-test-key"))
+                .andExpect(header().string(HttpHeaders.CACHE_CONTROL, "no-store"))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+        assertEquals(1, createResponse.split("t2_one-time-test-key", -1).length - 1);
+
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .delete("/api/admin/integration-api-keys/9"))
+                .andExpect(status().isNoContent());
+        verify(integrationApiKeyService).create("reports", "admin");
+        verify(integrationApiKeyService).revoke(9L);
     }
 
     @Test
@@ -150,6 +198,11 @@ class AdminAuthorizationTest {
     void nonAdminCannotReadUsersOrAuditLogs() throws Exception {
         mvc.perform(get("/api/admin/users")).andExpect(status().isForbidden());
         mvc.perform(get("/api/admin/audit-logs")).andExpect(status().isForbidden());
+        mvc.perform(get("/api/admin/integration-api-keys")).andExpect(status().isForbidden());
+        mvc.perform(post("/api/admin/integration-api-keys")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\":\"reports\"}"))
+                .andExpect(status().isForbidden());
         mvc.perform(post("/api/admin/users")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"username\":\"new-user\",\"role\":\"OFFICER\",\"password\":\"long-enough-password\"}"))

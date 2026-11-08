@@ -235,12 +235,14 @@ The REST API base path is `/api`. Useful route groups include:
 | User accounts and student links | `/api/admin/users/**` |
 | Audit log | `GET /api/admin/audit-logs` |
 | Authenticated student's own data | `/api/students/me/**` |
-| Shared system integration summary | `GET /api/integration/v1/summary` |
+| Shared system integration summaries | `GET /api/integration/v1/summary`, `GET /api/integration/v1/data-summary` |
 | Administrator external API proxy | `POST /api/admin/external-api/fetch` |
 
-Requests and responses use JSON. Authentication is HTTP Basic, and the backend enforces role permissions and student ownership. Do not embed credentials in a client, source file, QR code, or URL. Use HTTPS before sending credentials or accessing protected data across computers. Only the dedicated non-personal integration summary is eligible for the narrowly scoped LAN listener; do not expose PostgreSQL.
+Requests and responses use JSON. Application routes use HTTP Basic, and the backend enforces role permissions and student ownership. Integration routes instead require `X-API-Key`. Do not embed credentials in a client, source file, QR code, or URL. Use HTTPS before sending credentials or accessing protected data across computers. Only the dedicated non-personal integration summary routes are eligible for the narrowly scoped LAN listener; do not expose PostgreSQL.
 
 ### Shared API-key demonstration
+
+The read-only `GET /api/integration/v1/data-summary` endpoint returns `NON_PERSONAL_AGGREGATE` JSON: `studentCount`, an `attendance` object with total and status counts, and a UTC `generatedAt`. It contains no student identifiers, individual attendance or financial details. Both versioned integration GET routes are explicitly allowlisted; other paths and HTTP methods are denied.
 
 The provider endpoint is separate from application login and requires `X-API-Key`, configured locally with `TRACK2_INTEGRATION_API_KEY`. It returns only a non-personal service summary. The Administrator External API page sends GET requests through Spring Boot; it supports `X-API-Key` and Bearer authentication, exact endpoint allowlisting, HTTPS for remote systems, a 10-second request timeout, and a 1 MB JSON response limit. Add approved remote HTTPS endpoints to the comma-separated `EXTERNAL_API_ALLOWED_ENDPOINTS` setting in the ignored `backend/.env.integration.local`. Do not put credentials in URLs.
 
@@ -288,12 +290,53 @@ Perform these steps only on a trusted Wi-Fi network that allows peer-to-peer cli
 
 5. Add the peer's exact provider URL to the local `EXTERNAL_API_ALLOWED_PRIVATE_ENDPOINTS` setting in `backend/.env.integration.local` (preserve all other entries and existing keys):
 
-   - On laptop A: `https://track2-b.lan:8443/api/integration/v1/summary`
-   - On laptop B: `https://track2-a.lan:8443/api/integration/v1/summary`
+   - On laptop A: `https://track2-b.lan:8443/api/integration/v1/summary` and `https://track2-b.lan:8443/api/integration/v1/data-summary`
+   - On laptop B: `https://track2-a.lan:8443/api/integration/v1/summary` and `https://track2-a.lan:8443/api/integration/v1/data-summary`
 
    Configure each laptop's current `TRACK2_INTEGRATION_API_KEY` as the key the other laptop uses to fetch its summary. Exchange these keys out of band; never place them in a URL, source file, command history, or shared chat. Restart Spring Boot only with the owner's approval so the launcher loads the new configuration.
 
-6. For a one-way check from A to B, sign in as Admin on A, open **External API**, enter A's exact allowlisted URL for B, choose **X-API-Key**, paste B's provider key, and select **Get JSON data**. Repeat in the reverse direction from B using A's URL and key. Each response must identify `NON_PERSONAL_SUMMARY`; the fetch is read-only and does not create, change, or synchronize database records. Confirm `https://127.0.0.1:5173/` still opens locally on each laptop.
+6. After both listeners have been enabled and their configuration has been loaded (restart Spring Boot only with the owner's approval), verify one direction at a time using the commands below. On laptop A, use laptop B's hostname and key; on laptop B, use laptop A's hostname and key. Both endpoints must return HTTP 200. The data summary must be classified `NON_PERSONAL_AGGREGATE`; the summary must be `NON_PERSONAL_SUMMARY`. These GET requests do not create, change, or synchronize database records.
+
+7. On each laptop, open a PowerShell session in the project root and define this helper. It prompts for the peer key as a secure string, sends it only in the `X-API-Key` header, and prints the approved JSON response:
+
+   ```powershell
+   function Test-Track2PeerReadOnly {
+       param([Parameter(Mandatory = $true)][string]$PeerBaseUrl)
+       $secureKey = Read-Host -Prompt 'Partner API key' -AsSecureString
+       $keyPointer = [IntPtr]::Zero
+       try {
+           $keyPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureKey)
+           $apiKey = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($keyPointer)
+           $headers = @{ 'X-API-Key' = $apiKey }
+           foreach ($path in @('/api/integration/v1/summary', '/api/integration/v1/data-summary')) {
+               $response = Invoke-RestMethod -Method Get -Uri "$PeerBaseUrl$path" -Headers $headers -TimeoutSec 10
+               Write-Output "HTTP 200 $path"
+               $response | ConvertTo-Json -Depth 5
+           }
+       }
+       finally {
+           if ($keyPointer -ne [IntPtr]::Zero) {
+               [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($keyPointer)
+           }
+           if ($null -ne $secureKey) {
+               $secureKey.Dispose()
+           }
+           Remove-Variable apiKey, headers, secureKey -ErrorAction SilentlyContinue
+       }
+   }
+   ```
+
+   Run the matching command on each computer:
+
+   ```powershell
+   # Laptop A retrieves approved data from laptop B.
+   Test-Track2PeerReadOnly -PeerBaseUrl 'https://track2-b.lan:8443'
+
+   # Laptop B retrieves approved data from laptop A.
+   Test-Track2PeerReadOnly -PeerBaseUrl 'https://track2-a.lan:8443'
+   ```
+
+   Enter the peer's existing provider key only at the secure prompt; do not put it in a command, URL, script, environment file, or chat. Do not use `curl -k`, disable certificate verification, expose port 8080/PostgreSQL, or send write requests. If either call fails, stop and investigate certificate trust, hostname resolution, listener configuration, or the peer-scoped firewall rule before retrying. Confirm `https://127.0.0.1:5173/` remains available locally on each laptop.
 
 To disable access, set `TRACK2_LAN_API_ENABLED=false`, remove the **Track2 read-only integration HTTPS** firewall rule (`Remove-NetFirewallRule -DisplayName 'Track2 read-only integration HTTPS'`), remove the peer endpoint from the private allowlist, and restart Spring Boot with approval. Remove the peer's hosts entry and imported CA when finished. If either Wi-Fi address changes, update the hosts entry, private allowlist, bind/firewall settings, and restart only with approval.
 

@@ -41,6 +41,7 @@ interface EventRepo extends JpaRepository<DepartmentEvent,Long>{
 }
 interface AttendanceRepo extends JpaRepository<Attendance,Long>{
  boolean existsByStudentIdAndEventId(Long studentId,Long eventId);
+ long countByStatus(Attendance.Status status);
  List<Attendance> findByStudentId(Long id);
  List<Attendance> findByStudentIdOrderByScannedAtDesc(Long id);
  List<Attendance> findByEventId(Long eventId);
@@ -59,4 +60,8 @@ interface UserRepo extends JpaRepository<UserAccount,Long>{
 }
 interface AuditRepo extends JpaRepository<AuditLog,Long>{
  List<AuditLog> findAllByOrderByOccurredAtDesc(org.springframework.data.domain.Pageable pageable);
+}
+interface IntegrationApiKeyRepo extends JpaRepository<IntegrationApiKey,Long>{
+ List<IntegrationApiKey> findAllByOrderByCreatedAtDesc();
+ boolean existsByKeyHashAndRevokedAtIsNull(String keyHash);
 }

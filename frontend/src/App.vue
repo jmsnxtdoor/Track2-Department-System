@@ -5,6 +5,7 @@ import { useDisplay } from 'vuetify';
 import { setRequestFailure } from './requestState.js';
 import { saveUserAccount } from './userAccounts.js';
 import { buildExternalApiRequest } from './externalApi.js';
+import { createApiKeyManagement } from './apiKeyManagement.js';
 import { clearIdempotencyKey, getIdempotencyKey } from './idempotency.js';
 
 const api = axios.create({ baseURL: import.meta.env.VITE_API_URL || '/api' });
@@ -52,6 +53,7 @@ const externalApiResult = ref(null);
 const externalApiStatus = ref(null);
 const externalApiError = ref('');
 const externalApiLoading = ref(false);
+const apiKeyManagementError = ref('');
 const reverseDialog = ref(false);
 const reverseTarget = ref(null);
 const reverseType = ref('');
@@ -298,6 +300,62 @@ async function request(method, url, data) {
   }
 }
 
+const apiKeyManagement = createApiKeyManagement(
+  request,
+  key => navigator.clipboard.writeText(key),
+);
+
+async function loadManagedApiKeys() {
+  apiKeyManagementError.value = '';
+  try {
+    await apiKeyManagement.load();
+  } catch (failure) {
+    apiKeyManagementError.value = failure.response?.data?.detail
+      || failure.message
+      || 'Could not load API keys.';
+  }
+}
+
+async function generateManagedApiKey() {
+  apiKeyManagementError.value = '';
+  try {
+    await apiKeyManagement.generate();
+    if (page.value !== 'External API' || role.value !== 'ADMIN') {
+      apiKeyManagement.clearOneTimeKey();
+    }
+  } catch (failure) {
+    apiKeyManagementError.value = failure.response?.data?.detail
+      || failure.message
+      || 'Could not generate an API key.';
+  }
+}
+
+async function copyManagedApiKey() {
+  apiKeyManagementError.value = '';
+  try {
+    await apiKeyManagement.copyOneTimeKey();
+    notice.value = 'The new API key was copied. It will not be shown again.';
+  } catch (failure) {
+    apiKeyManagementError.value = failure.message || 'Could not copy the API key.';
+  }
+}
+
+function dismissManagedApiKey() {
+  apiKeyManagement.clearOneTimeKey();
+}
+
+async function revokeManagedApiKey(item) {
+  if (!window.confirm(`Revoke the API key "${item.name}"?`)) return;
+  apiKeyManagementError.value = '';
+  try {
+    await apiKeyManagement.revoke(item.id);
+  } catch (failure) {
+    apiKeyManagementError.value = failure.response?.data?.detail
+      || failure.message
+      || 'Could not revoke the API key.';
+  }
+}
+
 async function unlinkStudentRecord() {
   if (!editingUser.value || !editingUser.value.studentId) return;
   try {
@@ -353,6 +411,10 @@ async function logout() {
   stats.value = {};
   studentPortal.value = { summary: null, ledger: [], attendance: [] };
   reportData.value = { students: [], finance: null, funds: [], attendance: [] };
+  apiKeyManagement.clearOneTimeKey();
+  apiKeyManagement.state.items = [];
+  apiKeyManagement.state.name = '';
+  apiKeyManagementError.value = '';
   externalApiCredential.value = '';
   externalApiResult.value = null;
   externalApiStatus.value = null;
@@ -727,12 +789,15 @@ const balance = id => ledger.value
   .reduce((total, item) => total + (item.kind === 'FINE' ? Number(item.amount) : -Number(item.amount)), 0);
 
 watch(page, async value => {
+  if (value !== 'External API') apiKeyManagement.clearOneTimeKey();
   if (scannerElement.value && value !== 'Attendance') await stopQrScanner();
   if (value === 'Users & Roles' || value === 'Audit Logs') await loadAdminPage(value);
+  if (value === 'External API' && role.value === 'ADMIN') await loadManagedApiKeys();
   if (value === 'Reports') await loadReports();
 });
 
 onBeforeUnmount(() => {
+  apiKeyManagement.clearOneTimeKey();
   void stopQrScanner();
 });
 </script>
@@ -1104,6 +1169,86 @@ onBeforeUnmount(() => {
                 The external endpoint returned HTTP {{ externalApiStatus }}.
               </v-alert>
               <pre class="external-api-json">{{ JSON.stringify(externalApiResult, null, 2) }}</pre>
+            </v-card>
+            <v-card class="pa-5 mt-4">
+              <h3>Track 2 integration API keys</h3>
+              <p class="muted mt-2">
+                Create credentials for read-only integration endpoints. The full key is shown once and is not stored in this browser.
+                Existing shared API keys continue to work.
+              </p>
+              <v-form class="mt-4" @submit.prevent="generateManagedApiKey">
+                <v-text-field
+                  v-model="apiKeyManagement.state.name"
+                  label="Key name"
+                  placeholder="Finance reporting integration"
+                  maxlength="100"
+                  counter="100"
+                  autocomplete="off"
+                  required
+                  variant="outlined"
+                />
+                <v-btn
+                  type="submit"
+                  color="primary"
+                  :loading="apiKeyManagement.state.generating"
+                  :disabled="apiKeyManagement.state.generating || !apiKeyManagement.state.name.trim()"
+                >
+                  Generate API key
+                </v-btn>
+              </v-form>
+              <v-alert v-if="apiKeyManagement.state.oneTimeKey" type="warning" variant="tonal" class="mt-4">
+                <p class="mb-2">Copy this key now. It cannot be viewed again after you leave this page or dismiss it.</p>
+                <v-text-field
+                  :model-value="apiKeyManagement.state.oneTimeKey"
+                  label="New API key — shown once"
+                  readonly
+                  autocomplete="off"
+                  class="mt-2"
+                />
+                <div class="d-flex ga-2">
+                  <v-btn color="primary" @click="copyManagedApiKey">Copy key</v-btn>
+                  <v-btn variant="text" @click="dismissManagedApiKey">Done</v-btn>
+                </div>
+              </v-alert>
+              <v-alert v-if="apiKeyManagementError" type="error" variant="tonal" class="mt-4">
+                {{ apiKeyManagementError }}
+              </v-alert>
+              <div class="scroll-table mt-4">
+                <v-table density="compact">
+                  <thead>
+                    <tr><th>Name</th><th>Key</th><th>Status</th><th>Created</th><th>Actions</th></tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="item in apiKeyManagement.state.items" :key="item.id">
+                      <td>{{ item.name }}</td>
+                      <td aria-label="Masked API key">••••••••••••</td>
+                      <td>
+                        <v-chip size="small" :color="item.status === 'ACTIVE' ? 'success' : 'secondary'">
+                          {{ item.status }}
+                        </v-chip>
+                      </td>
+                      <td>{{ item.createdAt?.slice(0, 10) }}</td>
+                      <td>
+                        <v-btn
+                          v-if="item.status === 'ACTIVE'"
+                          size="small"
+                          variant="text"
+                          color="error"
+                          @click="revokeManagedApiKey(item)"
+                        >
+                          Revoke
+                        </v-btn>
+                        <span v-else class="muted">—</span>
+                      </td>
+                    </tr>
+                    <tr v-if="!apiKeyManagement.state.items.length">
+                      <td colspan="5" class="text-center muted py-6">
+                        {{ apiKeyManagement.state.loading ? 'Loading API keys…' : 'No API keys have been generated.' }}
+                      </td>
+                    </tr>
+                  </tbody>
+                </v-table>
+              </div>
             </v-card>
           </template>
 

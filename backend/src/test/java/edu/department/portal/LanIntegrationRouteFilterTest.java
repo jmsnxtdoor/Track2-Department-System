@@ -5,17 +5,28 @@ import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 
+import java.util.List;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 class LanIntegrationRouteFilterTest {
     private static final int LAN_PORT = 8443;
+    private static final List<String> ALLOWED_PATHS = List.of(
+            "/api/integration/v1/summary",
+            "/api/integration/v1/data-summary");
     private final LanIntegrationRouteFilter filter = new LanIntegrationRouteFilter(LAN_PORT);
 
     @Test
-    void permitsOnlyTheSecureReadOnlySummaryRouteOnTheLanConnector() throws Exception {
-        assertRequest(8443, true, "GET", "/api/integration/v1/summary", null, 200, true);
-        assertRequest(8443, true, "POST", "/api/integration/v1/summary", null, 404, false);
+    void permitsOnlySecureReadOnlyIntegrationGetRoutesOnTheLanConnector() throws Exception {
+        for (String path : ALLOWED_PATHS) {
+            assertRequest(8443, true, "GET", path, null, 200, true);
+            assertRequest(8443, true, "POST", path, null, 404, false);
+            assertRequest(8443, true, "PUT", path, null, 404, false);
+            assertRequest(8443, true, "PATCH", path, null, 404, false);
+            assertRequest(8443, true, "DELETE", path, null, 404, false);
+        }
         assertRequest(8443, true, "GET", "/api/admin/users", null, 404, false);
+        assertRequest(8443, true, "GET", "/api/integration/v1/students", null, 404, false);
         assertRequest(8443, true, "GET", "/api/integration/v1/summary/extra", null, 404, false);
         assertRequest(8443, true, "GET", "/api/integration/v1/summary", "key=value", 404, false);
         assertRequest(8443, false, "GET", "/api/integration/v1/summary", null, 404, false);
